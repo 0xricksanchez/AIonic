@@ -1,0 +1,16 @@
+[package]
+name = "aionic"
+authors = ["434b <admin@0x434b.dev>"]
+version = "0.1.0"
+edition = "2021"
+description = "AIonic: A unified, user-friendly Rust library for seamless integration with various public Language Model APIs, such as openAI"
+license = "MIT"
+repository = "https://github.com/0xricksanchez/AIonic"
+
+
+[dependencies]
+reqwest = { version = "0.11.18", features = ["json"] }
+rustyline = { version = "12.0.0", features = ["with-fuzzy"] }
+serde = { version = "1.0.180", features = ["derive"] }
+serde_json = "1.0.104"
+tokio = { version = "1.29.1", features = ["full"] }
