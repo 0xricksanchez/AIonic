@@ -1,4 +1,24 @@
-# AIonic
+<div align="center">
+  <h1>AIonic</h1>
+  <div style="text-align: center">
+    <img
+      src="./img/logo.png"
+      height="150px"
+      alt="AIonic logo"
+    />
+  </div>
+  <hr />
+  <a href="https://crates.io/crates/AIonic">
+    <img src="https://img.shields.io/crates/v/AIonic.svg"/>
+  </a>
+  <a href="https://github.com/0xricksanchez/AIonic/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/0xricksanchez/AIonic"/>
+  </a>
+ <a href="https://github.com/0xricksanchez/AIonic/blob/main/CONTRIBUTING.md">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome" />
+  </a>
+  <br />
+</div>
 
 AIonic is a Rust library designed to interface seamlessly with a range of public
 Language Model APIs, offering a streamlined, user-friendly experience. The name

@@ -1,4 +1,7 @@
-use reqwest::Client;
+use reqwest::multipart::{Form, Part};
+use reqwest::{Body, Client, IntoUrl};
+use tokio_util::codec::{BytesCodec, FramedRead};
+
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use serde::{Deserialize, Serialize};
@@ -6,6 +9,7 @@ use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::exit;
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +85,7 @@ pub struct Function {
     pub parameters: String,
 }
 
+#[derive(Clone, Debug, Copy)]
 pub enum MessageRole {
     User,
     Assistant,
@@ -91,10 +96,10 @@ pub enum MessageRole {
 impl ToString for MessageRole {
     fn to_string(&self) -> String {
         match self {
-            MessageRole::User => "user".to_string(),
-            MessageRole::Assistant => "assistant".to_string(),
-            MessageRole::System => "system".to_string(),
-            MessageRole::Function => "function".to_string(),
+            Self::User => "user".to_string(),
+            Self::Assistant => "assistant".to_string(),
+            Self::System => "system".to_string(),
+            Self::Function => "function".to_string(),
         }
     }
 }
@@ -112,7 +117,7 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn new<S: Into<String>>(role: MessageRole, content: S) -> Self {
+    pub fn new<S: Into<String>>(role: &MessageRole, content: S) -> Self {
         Self {
             role: role.to_string(),
             content: content.into(),
@@ -177,9 +182,8 @@ struct Delta {
     content: Option<String>,
 }
 
-pub trait OpenAIConfig {
+pub trait OpenAIConfig: Send + Sync {
     fn default() -> Self;
-    // Shared common methods that apply to all OpenAI APIs
 }
 
 impl OpenAIConfig for Chat {
@@ -210,7 +214,7 @@ pub struct OpenAIClient<C: OpenAIConfig> {
     pub config: C,
 }
 
-impl<C: OpenAIConfig> Default for OpenAIClient<C> {
+impl<C: OpenAIConfig + Serialize + Sync + Send + std::fmt::Debug> Default for OpenAIClient<C> {
     fn default() -> Self {
         Self::new()
     }
@@ -224,12 +228,13 @@ pub enum ImageResponseFormat {
 impl ToString for ImageResponseFormat {
     fn to_string(&self) -> String {
         match self {
-            ImageResponseFormat::Url => "url".to_string(),
-            ImageResponseFormat::Base64Json => "b64_json".to_string(),
+            Self::Url => "url".to_string(),
+            Self::Base64Json => "b64_json".to_string(),
         }
     }
 }
 
+#[derive(Clone, Debug, Copy)]
 pub struct ImageSize {
     width: u64,
     height: u64,
@@ -259,7 +264,8 @@ impl ToString for ImageSize {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Image {
-    prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     n: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -268,21 +274,10 @@ pub struct Image {
     response_format: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ImageEdit {
-    image: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     mask: Option<String>,
-    prompt: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    n: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    size: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user: Option<String>,
 }
 
 impl Image {
@@ -313,7 +308,7 @@ impl OpenAIClient<Image> {
         self
     }
 
-    pub fn set_size(mut self, size: ImageSize) -> Self {
+    pub fn set_size(mut self, size: &ImageSize) -> Self {
         self.config.size = Some(size.to_string());
         self
     }
@@ -322,11 +317,13 @@ impl OpenAIClient<Image> {
 impl OpenAIConfig for Image {
     fn default() -> Self {
         Self {
-            prompt: String::new(),
+            prompt: None,
             n: Some(Self::get_default_n()),
             size: Some(Self::get_default_size().into()),
             response_format: Some(Self::get_default_response_format().into()),
             user: None,
+            image: None,
+            mask: None,
         }
     }
 }
@@ -345,37 +342,156 @@ pub struct ImageData {
 
 impl OpenAIClient<Image> {
     const OPENAI_API_IMAGE_GEN_URL: &str = "https://api.openai.com/v1/images/generations";
-    //const OPENAI_API_IMAGE_EDIT_URL: &str = "https://api.openai.com/v1/images/edit";
-    //const OPENAI_API_IMAGE_VARIATION_URL: &str = "https://api.openai.com/v1/images/variations";
+    const OPENAI_API_IMAGE_EDIT_URL: &str = "https://api.openai.com/v1/images/edits";
+    const OPENAI_API_IMAGE_VARIATION_URL: &str = "https://api.openai.com/v1/images/variations";
 
-    pub async fn create_image(
+    pub async fn create_image<S: Into<String>>(
         &mut self,
-        prompt: String,
+        prompt: S,
     ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
-        self.config.prompt = prompt;
-        let res = self
-            .client
-            .post(Self::OPENAI_API_IMAGE_GEN_URL)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&self.config)
-            .send()
+        self.config.prompt = Some(prompt.into());
+        if self.config.image.is_some() {
+            self.config.image = None;
+        }
+        if self.config.mask.is_some() {
+            self.config.mask = None;
+        }
+        let image_response: ImageResponse = self
+            ._make_post_request(Self::OPENAI_API_IMAGE_GEN_URL)
+            .await?
+            .json()
             .await?;
 
-        let image_response: ImageResponse = res.json().await?;
-        let urls_or_b64 = image_response
+        Ok(self._parse_response(&image_response))
+    }
+
+    pub async fn edit_image<S: Into<String>>(
+        &mut self,
+        prompt: S,
+        image_file_path: S,
+        mask: Option<S>,
+    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
+        self.config.image = Some(image_file_path.into());
+        if let Some(mask) = mask {
+            self.config.mask = Some(mask.into());
+        }
+        self.config.prompt = Some(prompt.into());
+        println!("{:?}", self.config);
+
+        let image_response: ImageResponse = self
+            ._make_file_upload_request(Self::OPENAI_API_IMAGE_EDIT_URL)
+            .await?;
+        println!("{:?}", image_response);
+
+        Ok(self._parse_response(&image_response))
+    }
+
+    async fn _get_streamed_body<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<Body, Box<dyn Error + Send + Sync>> {
+        if !path.as_ref().exists() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Image not found",
+            )));
+        }
+        let file_stream_body = tokio::fs::File::open(path).await?;
+        let stream = FramedRead::new(file_stream_body, BytesCodec::new());
+        let body = Body::wrap_stream(stream);
+        Ok(body)
+    }
+
+    async fn _create_file_part<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<Part, Box<dyn Error + Send + Sync>> {
+        let file_name = path.as_ref().to_str().unwrap().to_string();
+        let streamed_body = self._get_streamed_body(path).await?;
+        let part_stream = Part::stream(streamed_body)
+            .file_name(file_name)
+            .mime_str("application/octet-stream")?;
+        Ok(part_stream)
+    }
+
+    pub async fn create_image_variation<S: Into<String>>(
+        &mut self,
+        image_file_path: S,
+    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
+        self.config.image = Some(image_file_path.into());
+        if self.config.prompt.is_some() {
+            self.config.prompt = None;
+        }
+        if self.config.mask.is_some() {
+            self.config.mask = None;
+        }
+        let image_response: ImageResponse = self
+            ._make_file_upload_request(Self::OPENAI_API_IMAGE_VARIATION_URL)
+            .await?;
+
+        Ok(self._parse_response(&image_response))
+    }
+
+    fn _parse_response(&mut self, image_response: &ImageResponse) -> Vec<String> {
+        image_response
             .data
             .iter()
             .filter_map(|d| {
-                if self.config.response_format == Some("url".to_string()) {
+                if self.config.response_format == Some("url".into()) {
                     d.url.clone()
                 } else {
                     d.b64_json.clone()
                 }
             })
-            .collect::<Vec<String>>();
+            .collect::<Vec<String>>()
+    }
 
-        Ok(urls_or_b64)
+    async fn _make_file_upload_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+    ) -> Result<ImageResponse, Box<dyn Error + Send + Sync>> {
+        let file_name = self.config.image.clone().unwrap();
+        let file_part_stream = self._create_file_part(file_name).await?;
+        let mut form = Form::new().part("image", file_part_stream);
+
+        if self.config.prompt.is_some() {
+            form = form.text("prompt", self.config.prompt.clone().unwrap());
+        }
+        if self.config.mask.is_some() {
+            let mask_name = self.config.mask.clone().unwrap();
+            let mask_part_stream = self._create_file_part(mask_name).await?;
+            form = form.part("mask", mask_part_stream);
+        }
+
+        if self.config.response_format.is_some() {
+            form = form.text(
+                "response_format",
+                self.config.response_format.clone().unwrap(),
+            );
+        }
+
+        if self.config.size.is_some() {
+            form = form.text("size", self.config.size.clone().unwrap());
+        }
+
+        if self.config.n.is_some() {
+            form = form.text("n", self.config.n.unwrap().to_string());
+        }
+
+        if self.config.user.is_some() {
+            form = form.text("user", self.config.user.clone().unwrap());
+        }
+
+        let image_response: ImageResponse = self
+            .client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .multipart(form)
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(image_response)
     }
 }
 
@@ -413,25 +529,13 @@ impl OpenAIClient<Chat> {
     }
 
     pub fn set_primer<S: Into<String>>(mut self, primer_msg: S) -> Self {
-        let msg = Message::new(MessageRole::System, primer_msg.into());
+        let msg = Message::new(&MessageRole::System, primer_msg.into());
         self.config.messages.insert(0, msg);
         self
     }
 
     pub fn get_last_message(&self) -> Option<&Message> {
         self.config.messages.last()
-    }
-
-    async fn _make_request(&mut self) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
-        let res = self
-            .client
-            .post(Self::OPENAI_API_COMPLETIONS_URL)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&self.config)
-            .send()
-            .await?;
-        Ok(res)
     }
 
     fn _process_delta(
@@ -489,17 +593,21 @@ impl OpenAIClient<Chat> {
         Ok(())
     }
 
-    pub async fn ask(
+    pub async fn ask<S: Into<String>>(
         &mut self,
-        prompt: String,
+        prompt: S,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut answer_chunks: Vec<String> = Vec::new();
         let is_streamed = self.config.stream.unwrap_or(false);
         self.config
             .messages
-            .push(Message::new(MessageRole::User, prompt));
-        let r = self._make_request();
-        if !is_streamed {
+            .push(Message::new(&MessageRole::User, prompt));
+        let r = self._make_post_request(Self::OPENAI_API_COMPLETIONS_URL);
+        if is_streamed {
+            let mut res = r.await?;
+            self._ask_openai_streamed(&mut res, &mut answer_chunks)
+                .await?;
+        } else {
             let r = r.await?.json::<Response>().await?;
             for choice in r.choices.unwrap() {
                 if !self.disable_live_stream {
@@ -508,16 +616,12 @@ impl OpenAIClient<Chat> {
                 }
                 answer_chunks.push(choice.message.content);
             }
-        } else {
-            let mut res = r.await?;
-            self._ask_openai_streamed(&mut res, &mut answer_chunks)
-                .await?;
         }
 
         let answer_text = answer_chunks.join("");
         self.config
             .messages
-            .push(Message::new(MessageRole::Assistant, &answer_text));
+            .push(Message::new(&MessageRole::Assistant, &answer_text));
         Ok(answer_text)
     }
 
@@ -550,7 +654,7 @@ impl OpenAIClient<Chat> {
     }
 }
 
-impl<C: OpenAIConfig> OpenAIClient<C> {
+impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
     const OPENAI_API_MODELS_URL: &str = "https://api.openai.com/v1/models";
     pub fn new() -> Self {
         env::var("OPENAI_API_KEY").map_or_else(
@@ -575,14 +679,39 @@ impl<C: OpenAIConfig> OpenAIClient<C> {
         self
     }
 
-    pub async fn models(&mut self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        let resp = self
+    async fn _make_post_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
+        let res = self
             .client
-            .get(Self::OPENAI_API_MODELS_URL)
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&self.config)
+            .send()
+            .await?;
+        Ok(res)
+    }
+
+    async fn _make_get_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
+        let res = self
+            .client
+            .get(url)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await?;
+        Ok(res)
+    }
+
+    pub async fn models(
+        &mut self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self._make_get_request(Self::OPENAI_API_MODELS_URL).await?;
 
         if !resp.status().is_success() {
             return Err(Box::new(std::io::Error::new(
@@ -596,13 +725,12 @@ impl<C: OpenAIConfig> OpenAIClient<C> {
         Ok(model_ids)
     }
 
-    pub async fn check_model(&mut self, model: &str) -> Result<Model, Box<dyn std::error::Error>> {
+    pub async fn check_model(
+        &mut self,
+        model: &str,
+    ) -> Result<Model, Box<dyn std::error::Error + Send + Sync>> {
         let resp = self
-            .client
-            .get(format!("{}/{}", Self::OPENAI_API_MODELS_URL, model))
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
+            ._make_get_request(format!("{}/{}", Self::OPENAI_API_MODELS_URL, model))
             .await?;
 
         if !resp.status().is_success() {
@@ -646,22 +774,22 @@ mod tests {
     #[tokio::test]
     async fn test_single_request() {
         let mut client = OpenAIClient::<Chat>::new().set_stream_responses(false);
-        let reply = client.ask("Say this is a test!".to_string()).await;
-        assert_eq!(reply.unwrap(), "This is a test!".to_string());
+        let reply = client.ask("Say this is a test!").await;
+        assert_eq!(reply.unwrap(), "This is a test!");
     }
 
     #[tokio::test]
     async fn test_single_request_streamed() {
         let mut client = OpenAIClient::<Chat>::new();
-        let reply = client.ask("Say this is a test!".to_string()).await;
-        assert_eq!(reply.unwrap(), "This is a test!".to_string());
+        let reply = client.ask("Say this is a test!").await;
+        assert_eq!(reply.unwrap(), "This is a test!");
     }
 
     #[tokio::test]
     async fn test_create_single_image_url() {
         let mut client = OpenAIClient::<Image>::new();
         let images = client
-            .create_image("A beautiful sunset over the sea.".to_string())
+            .create_image("A beautiful sunset over the sea.")
             .await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 1);
@@ -671,7 +799,7 @@ mod tests {
     async fn test_create_multiple_image_urls() {
         let mut client = OpenAIClient::<Image>::new().set_max_images(2);
         let images = client
-            .create_image("A logo for a library written in Rust that deals with AI".to_string())
+            .create_image("A logo for a library written in Rust that deals with AI")
             .await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 2);
@@ -682,7 +810,25 @@ mod tests {
         let mut client =
             OpenAIClient::<Image>::new().set_response_format(&ImageResponseFormat::Base64Json);
         let images = client
-            .create_image("A beautiful sunset over the sea.".to_string())
+            .create_image("A beautiful sunset over the sea.")
+            .await;
+        assert!(images.is_ok());
+        assert_eq!(images.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_image_variation() {
+        let mut client = OpenAIClient::<Image>::new();
+        let images = client.create_image_variation("./img/logo.png").await;
+        assert!(images.is_ok());
+        assert_eq!(images.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_image_edit() {
+        let mut client = OpenAIClient::<Image>::new();
+        let images = client
+            .edit_image("Make the background transparent", "./img/logo.png", None)
             .await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 1);
