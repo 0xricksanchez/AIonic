@@ -1,4 +1,4 @@
-use aionic::openai::chat_completion::Chat;
+use aionic::openai::chat::Chat;
 use aionic::openai::OpenAIClient;
 
 #[tokio::main]
