@@ -1,5 +1,4 @@
-use aionic::openai::chat::Chat;
-use aionic::openai::OpenAIClient;
+use aionic::openai::{Chat, OpenAIClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
