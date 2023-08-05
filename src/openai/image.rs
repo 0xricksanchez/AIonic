@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 ///
 /// This can either be a URL (Url) pointing to the generated image, or a Base64-encoded JSON string (Base64Json)
 /// that represents the image.
-pub enum ImageResponseFormat {
+pub enum ResponseDataType {
     Url,
     Base64Json,
 }
 
-impl ToString for ImageResponseFormat {
+impl ToString for ResponseDataType {
     fn to_string(&self) -> String {
         match self {
             Self::Url => "url".to_string(),
@@ -22,7 +22,7 @@ impl ToString for ImageResponseFormat {
 ///
 /// It consists of the width and the height of the image, both represented as unsigned 64-bit integers.
 #[derive(Clone, Debug, Copy)]
-pub struct ImageSize {
+pub struct Size {
     /// The width of the image in pixels.
     pub width: u64,
 
@@ -30,11 +30,27 @@ pub struct ImageSize {
     pub height: u64,
 }
 
+impl Size {
+    pub fn new(width: u64, height: u64) -> Self {
+        Self { width, height }
+    }
+
+    pub fn resize(mut self, width: Option<u64>, height: Option<u64>) -> Self {
+        if let Some(width) = width {
+            self.width = width;
+        }
+        if let Some(height) = height {
+            self.height = height;
+        }
+        self
+    }
+}
+
 /// Represents the response from an Image API call to OpenAI.
 ///
 /// Contains fields that provide information about the creation time and the data associated with the generated image.
 #[derive(Deserialize, Debug)]
-pub struct ImageResponse {
+pub struct Response {
     /// UNIX timestamp indicating when the image was created.
     pub created: u64,
 
@@ -53,23 +69,7 @@ pub struct ImageData {
     pub b64_json: Option<String>,
 }
 
-impl ImageSize {
-    pub fn new(width: u64, height: u64) -> Self {
-        Self { width, height }
-    }
-
-    pub fn resize(mut self, width: Option<u64>, height: Option<u64>) -> Self {
-        if let Some(width) = width {
-            self.width = width;
-        }
-        if let Some(height) = height {
-            self.height = height;
-        }
-        self
-    }
-}
-
-impl ToString for ImageSize {
+impl ToString for Size {
     fn to_string(&self) -> String {
         format!("{}x{}", self.width, self.height)
     }
@@ -123,28 +123,59 @@ impl Image {
     const DEFAULT_N: u64 = 1;
     const DEFAULT_SIZE: &str = "1024x1024";
     const DEFAULT_RESPONSE_FORMAT: &str = "url";
+
+    /// Returns the default n for the Image API.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `u64` value which represents the default n.
     pub fn get_default_n() -> u64 {
         Self::DEFAULT_N
     }
 
+    /// Returns the default image size for the Image API.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `&'static str` value which represents the default size.
     pub fn get_default_size() -> &'static str {
         Self::DEFAULT_SIZE
     }
 
+    /// Returns the default response data type for the Image API.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `&'static str` value which represents the default response data type.
     pub fn get_default_response_format() -> &'static str {
         Self::DEFAULT_RESPONSE_FORMAT
     }
 
+    /// Checks if the current Image object is valid in terms of its size fields
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `bool` value which represents whether the Image size is valid.
     pub fn is_valid_size(size: &str) -> bool {
         let valid_sizes = ["256x256", "512x512", "1024x1024"];
         valid_sizes.contains(&size)
     }
 
+    /// Checks if the current Image object is valid in terms of the requested response format
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `bool` value which represents whether the Image response format is valid.
     pub fn is_valid_response_format(response_format: &str) -> bool {
         let valid_response_formats = ["url", "b64_json"];
         valid_response_formats.contains(&response_format)
     }
 
+    /// Checks if the current Image object is valid in terms of its n field
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `bool` value which represents whether the Image n is valid.
     pub fn is_valid_n(n: u64) -> bool {
         (1..=10).contains(&n)
     }

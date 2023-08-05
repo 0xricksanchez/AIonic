@@ -6,7 +6,7 @@ use std::collections::HashMap;
 /// Contains fields that provide information about the model used, the choices made by the model,
 /// the unique ID for the API call, and usage data regarding the number of tokens processed.
 #[derive(Deserialize, Debug)]
-pub struct ChatResponse {
+pub struct Response {
     /// Unique ID for the API call.
     pub id: Option<String>,
 
@@ -227,7 +227,8 @@ pub struct FunctionCall {
 /// # Example
 ///
 /// ```
-/// use aionic::openai::chat::{Chat, Message, MessageRole};
+/// use aionic::openai::Chat;
+/// use aionic::openai::OpenAIConfig;
 ///
 /// let chat = Chat::default();
 ///

@@ -1,5 +1,4 @@
-use aionic::openai::image::Image;
-use aionic::openai::OpenAIClient;
+use aionic::openai::{Image, OpenAIClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

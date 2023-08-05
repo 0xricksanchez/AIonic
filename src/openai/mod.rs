@@ -1,8 +1,8 @@
 pub mod chat;
 pub mod image;
 
-use chat::{Chat, ChatResponse, Message, MessageRole, StreamedReponse};
-use image::{Image, ImageResponse, ImageResponseFormat, ImageSize};
+pub use chat::{Chat, Message, MessageRole, Response, StreamedReponse};
+pub use image::{Image, Response as ImageResponse, ResponseDataType, Size};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Body, Client, IntoUrl};
 use tokio_util::codec::{BytesCodec, FramedRead};
@@ -190,7 +190,7 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 impl OpenAIClient<Image> {
-    pub fn set_response_format(mut self, response_format: &ImageResponseFormat) -> Self {
+    pub fn set_response_format(mut self, response_format: &ResponseDataType) -> Self {
         self.config.response_format = Some(response_format.to_string());
         self
     }
@@ -200,7 +200,7 @@ impl OpenAIClient<Image> {
         self
     }
 
-    pub fn set_size(mut self, size: &ImageSize) -> Self {
+    pub fn set_size(mut self, size: &Size) -> Self {
         self.config.size = Some(size.to_string());
         self
     }
@@ -270,6 +270,19 @@ impl OpenAIClient<Image> {
             self.config.mask = Some(mask.into());
         }
         self.config.prompt = Some(prompt.into());
+
+        if !image::Image::is_valid_n(self.config.n.unwrap()) {
+            self.config.n = Some(image::Image::get_default_n());
+        }
+
+        if !image::Image::is_valid_size(self.config.size.as_ref().unwrap()) {
+            self.config.size = Some(image::Image::get_default_size().into());
+        }
+
+        if !image::Image::is_valid_response_format(self.config.response_format.as_ref().unwrap()) {
+            self.config.response_format = Some(image::Image::get_default_response_format().into());
+        }
+
         let image_response: ImageResponse = self
             ._make_file_upload_request(Self::OPENAI_API_IMAGE_EDIT_URL)
             .await?;
@@ -652,7 +665,7 @@ impl OpenAIClient<Chat> {
             self._ask_openai_streamed(&mut r, &mut answer_chunks)
                 .await?;
         } else {
-            let r = r.json::<ChatResponse>().await?;
+            let r = r.json::<Response>().await?;
             if let Some(choices) = r.choices {
                 for choice in choices {
                     if !self.disable_live_stream {
@@ -704,11 +717,15 @@ impl OpenAIClient<Chat> {
     /// use aionic::openai::chat::Chat;
     /// use aionic::openai::OpenAIClient;
     ///
-    /// let inst = OpenAIClient::<Chat>::new()
-    /// let result = inst.chat().await;
-    /// match result {
-    ///     Ok(()) => println!("Chat session ended."),
-    ///     Err(e) => println!("Error during chat session: {}", e),
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///     let mut inst = OpenAIClient::<Chat>::new();
+    ///     let result = inst.chat().await;
+    ///     match result {
+    ///         Ok(()) => println!("Chat session ended."),
+    ///         Err(e) => println!("Error during chat session: {}", e),
+    ///     }
+    ///     Ok(())
     /// }
     /// ```
     ///
@@ -806,7 +823,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_image_b64_json() {
         let mut client =
-            OpenAIClient::<Image>::new().set_response_format(&ImageResponseFormat::Base64Json);
+            OpenAIClient::<Image>::new().set_response_format(&ResponseDataType::Base64Json);
         let images = client
             .create_image("A beautiful sunset over the sea.")
             .await;
