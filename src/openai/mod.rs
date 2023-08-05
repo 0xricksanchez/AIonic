@@ -1,3 +1,8 @@
+pub mod chat_completion;
+pub mod image;
+
+use chat_completion::{Chat, Message, MessageRole};
+use image::{Image, ImageResponse, ImageResponseFormat, ImageSize};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Body, Client, IntoUrl};
 use tokio_util::codec::{BytesCodec, FramedRead};
@@ -5,12 +10,15 @@ use tokio_util::codec::{BytesCodec, FramedRead};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::env;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::exit;
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = STRUCT DEFINITIONS
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 #[derive(Debug, Deserialize)]
 pub struct Model {
@@ -24,113 +32,6 @@ pub struct Model {
 struct ModelsResponse {
     data: Vec<Model>,
     object: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Chat {
-    pub model: String,
-    pub messages: Vec<Message>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub functions: Option<Vec<Function>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub n: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub presence_penalty: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub frequency_penalty: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub logit_bias: Option<HashMap<String, f32>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user: Option<String>,
-}
-
-impl Chat {
-    const DEFAULT_TEMPERATURE: f64 = 1.0;
-    const DEFAULT_MAX_TOKENS: u64 = 2048;
-    const DEFAULT_STREAM_RESPONSE: bool = true;
-    const DEFAULT_MODEL: &str = "gpt-3.5-turbo";
-    pub fn get_default_temperature() -> f64 {
-        Self::DEFAULT_TEMPERATURE
-    }
-
-    pub fn get_default_max_tokens() -> u64 {
-        Self::DEFAULT_MAX_TOKENS
-    }
-
-    pub fn get_default_stream() -> bool {
-        Self::DEFAULT_STREAM_RESPONSE
-    }
-
-    pub fn get_default_model() -> &'static str {
-        Self::DEFAULT_MODEL
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Function {
-    pub name: String,
-    pub description: Option<String>,
-    // FIXME: this should be a JSON Schema https://platform.openai.com/docs/api-reference/chat/create#chat/create-parameters
-    pub parameters: String,
-}
-
-#[derive(Clone, Debug, Copy)]
-pub enum MessageRole {
-    User,
-    Assistant,
-    System,
-    Function,
-}
-
-impl ToString for MessageRole {
-    fn to_string(&self) -> String {
-        match self {
-            Self::User => "user".to_string(),
-            Self::Assistant => "assistant".to_string(),
-            Self::System => "system".to_string(),
-            Self::Function => "function".to_string(),
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Message {
-    pub role: String,
-    pub content: String,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub function_call: Option<FunctionCall>,
-}
-
-impl Message {
-    pub fn new<S: Into<String>>(role: &MessageRole, content: S) -> Self {
-        Self {
-            role: role.to_string(),
-            content: content.into(),
-            name: None,
-            function_call: None,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct FunctionCall {
-    pub name: String,
-    pub arguments: String,
 }
 
 #[allow(dead_code)]
@@ -182,6 +83,10 @@ struct Delta {
     content: Option<String>,
 }
 
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAIConfig TRAIT
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
 pub trait OpenAIConfig: Send + Sync {
     fn default() -> Self;
 }
@@ -206,6 +111,24 @@ impl OpenAIConfig for Chat {
     }
 }
 
+impl OpenAIConfig for Image {
+    fn default() -> Self {
+        Self {
+            prompt: None,
+            n: Some(Self::get_default_n()),
+            size: Some(Self::get_default_size().into()),
+            response_format: Some(Self::get_default_response_format().into()),
+            user: None,
+            image: None,
+            mask: None,
+        }
+    }
+}
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAIClient SHARED IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
 #[derive(Clone, Debug)]
 pub struct OpenAIClient<C: OpenAIConfig> {
     pub client: Client,
@@ -220,82 +143,100 @@ impl<C: OpenAIConfig + Serialize + Sync + Send + std::fmt::Debug> Default for Op
     }
 }
 
-pub enum ImageResponseFormat {
-    Url,
-    Base64Json,
-}
-
-impl ToString for ImageResponseFormat {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Url => "url".to_string(),
-            Self::Base64Json => "b64_json".to_string(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Copy)]
-pub struct ImageSize {
-    width: u64,
-    height: u64,
-}
-
-impl ImageSize {
-    pub fn new(width: u64, height: u64) -> Self {
-        Self { width, height }
+impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
+    const OPENAI_API_MODELS_URL: &str = "https://api.openai.com/v1/models";
+    pub fn new() -> Self {
+        env::var("OPENAI_API_KEY").map_or_else(
+            |_| {
+                println!("OPENAI_API_KEY environment variable not set");
+                exit(1);
+            },
+            |api_key| {
+                let client = Client::new();
+                Self {
+                    client,
+                    api_key,
+                    disable_live_stream: false,
+                    config: C::default(),
+                }
+            },
+        )
     }
 
-    pub fn resize(mut self, width: Option<u64>, height: Option<u64>) -> Self {
-        if let Some(width) = width {
-            self.width = width;
-        }
-        if let Some(height) = height {
-            self.height = height;
-        }
+    pub fn disable_stdout(mut self) -> Self {
+        self.disable_live_stream = true;
         self
     }
-}
 
-impl ToString for ImageSize {
-    fn to_string(&self) -> String {
-        format!("{}x{}", self.width, self.height)
+    async fn _make_post_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
+        let res = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .json(&self.config)
+            .send()
+            .await?;
+        Ok(res)
+    }
+
+    async fn _make_get_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
+        let res = self
+            .client
+            .get(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+        Ok(res)
+    }
+
+    pub async fn models(
+        &mut self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self._make_get_request(Self::OPENAI_API_MODELS_URL).await?;
+
+        if !resp.status().is_success() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Error: {}", resp.status()),
+            )));
+        }
+
+        let data: ModelsResponse = resp.json().await?;
+        let model_ids: Vec<String> = data.data.into_iter().map(|model| model.id).collect();
+        Ok(model_ids)
+    }
+
+    pub async fn check_model(
+        &mut self,
+        model: &str,
+    ) -> Result<Model, Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self
+            ._make_get_request(format!("{}/{}", Self::OPENAI_API_MODELS_URL, model))
+            .await?;
+
+        if !resp.status().is_success() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Error: {}", resp.status()),
+            )));
+        }
+
+        let model: Model = resp.json().await?;
+        Ok(model)
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Image {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    n: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    size: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    image: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mask: Option<String>,
-}
-
-impl Image {
-    const DEFAULT_N: u64 = 1;
-    const DEFAULT_SIZE: &str = "1024x1024";
-    const DEFAULT_RESPONSE_FORMAT: &str = "url";
-    pub fn get_default_n() -> u64 {
-        Self::DEFAULT_N
-    }
-
-    pub fn get_default_size() -> &'static str {
-        Self::DEFAULT_SIZE
-    }
-
-    pub fn get_default_response_format() -> &'static str {
-        Self::DEFAULT_RESPONSE_FORMAT
-    }
-}
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAIClient IMAGE IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 impl OpenAIClient<Image> {
     pub fn set_response_format(mut self, response_format: &ImageResponseFormat) -> Self {
@@ -312,32 +253,6 @@ impl OpenAIClient<Image> {
         self.config.size = Some(size.to_string());
         self
     }
-}
-
-impl OpenAIConfig for Image {
-    fn default() -> Self {
-        Self {
-            prompt: None,
-            n: Some(Self::get_default_n()),
-            size: Some(Self::get_default_size().into()),
-            response_format: Some(Self::get_default_response_format().into()),
-            user: None,
-            image: None,
-            mask: None,
-        }
-    }
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ImageResponse {
-    pub created: u64,
-    pub data: Vec<ImageData>,
-}
-
-#[derive(Deserialize, Debug)]
-pub struct ImageData {
-    pub url: Option<String>,
-    pub b64_json: Option<String>,
 }
 
 impl OpenAIClient<Image> {
@@ -490,6 +405,10 @@ impl OpenAIClient<Image> {
         Ok(image_response)
     }
 }
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAIClient CHAT IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 impl OpenAIClient<Chat> {
     const OPENAI_API_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -657,97 +576,6 @@ impl OpenAIClient<Chat> {
         }
         println!("{:?}", self.config.messages);
         Ok(())
-    }
-}
-
-impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
-    const OPENAI_API_MODELS_URL: &str = "https://api.openai.com/v1/models";
-    pub fn new() -> Self {
-        env::var("OPENAI_API_KEY").map_or_else(
-            |_| {
-                println!("OPENAI_API_KEY environment variable not set");
-                exit(1);
-            },
-            |api_key| {
-                let client = Client::new();
-                Self {
-                    client,
-                    api_key,
-                    disable_live_stream: false,
-                    config: C::default(),
-                }
-            },
-        )
-    }
-
-    pub fn disable_stdout(mut self) -> Self {
-        self.disable_live_stream = true;
-        self
-    }
-
-    async fn _make_post_request<S: IntoUrl + Send + Sync>(
-        &mut self,
-        url: S,
-    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
-        let res = self
-            .client
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&self.config)
-            .send()
-            .await?;
-        Ok(res)
-    }
-
-    async fn _make_get_request<S: IntoUrl + Send + Sync>(
-        &mut self,
-        url: S,
-    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
-        let res = self
-            .client
-            .get(url)
-            .header("Content-Type", "application/json")
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
-            .await?;
-        Ok(res)
-    }
-
-    pub async fn models(
-        &mut self,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let resp = self._make_get_request(Self::OPENAI_API_MODELS_URL).await?;
-
-        if !resp.status().is_success() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Error: {}", resp.status()),
-            )));
-        }
-
-        let data: ModelsResponse = resp.json().await?;
-        let model_ids: Vec<String> = data.data.into_iter().map(|model| model.id).collect();
-        Ok(model_ids)
-    }
-
-    pub async fn check_model(
-        &mut self,
-        model: &str,
-    ) -> Result<Model, Box<dyn std::error::Error + Send + Sync>> {
-        let resp = self
-            ._make_get_request(format!("{}/{}", Self::OPENAI_API_MODELS_URL, model))
-            .await?;
-
-        if !resp.status().is_success() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Error: {}", resp.status()),
-            )));
-        }
-
-        let model: Model = resp.json().await?;
-        Ok(model)
     }
 }
 
