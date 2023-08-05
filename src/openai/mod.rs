@@ -1,7 +1,7 @@
-pub mod chat_completion;
+pub mod chat;
 pub mod image;
 
-use chat_completion::{Chat, Message, MessageRole};
+use chat::{Chat, ChatResponse, Message, MessageRole, StreamedReponse};
 use image::{Image, ImageResponse, ImageResponseFormat, ImageSize};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Body, Client, IntoUrl};
@@ -27,60 +27,10 @@ pub struct Model {
     pub owned_by: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    data: Vec<Model>,
-    object: String,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, Debug)]
-struct Response {
-    id: Option<String>,
-    object: Option<String>,
-    created: Option<u64>,
-    model: Option<String>,
-    choices: Option<Vec<Choice>>,
-    usage: Option<Usage>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, Debug)]
-struct Usage {
-    prompt_tokens: u64,
-    completion_tokens: u64,
-    total_tokens: u64,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize, Debug)]
-struct Choice {
-    message: Message,
-    finish_reason: String,
-    index: u64,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct StreamedReponse {
-    id: String,
-    object: String,
-    created: u64,
-    model: String,
-    choices: Vec<StreamedChoices>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct StreamedChoices {
-    index: u64,
-    delta: Delta,
-    finish_reason: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Delta {
-    role: Option<String>,
-    content: Option<String>,
+pub struct ModelsResponse {
+    pub data: Vec<Model>,
+    pub object: String,
 }
 
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -97,6 +47,7 @@ impl OpenAIConfig for Chat {
             model: Self::get_default_model().into(),
             messages: vec![],
             functions: None,
+            function_call: None,
             temperature: Some(Self::get_default_temperature()),
             top_p: None,
             n: None,
@@ -259,7 +210,20 @@ impl OpenAIClient<Image> {
     const OPENAI_API_IMAGE_GEN_URL: &str = "https://api.openai.com/v1/images/generations";
     const OPENAI_API_IMAGE_EDIT_URL: &str = "https://api.openai.com/v1/images/edits";
     const OPENAI_API_IMAGE_VARIATION_URL: &str = "https://api.openai.com/v1/images/variations";
-
+    ///
+    /// Generates an image based on a textual description.
+    ///
+    /// This function sets the prompt to the given string and sends a request to the OpenAI API to create an image.
+    /// The function then parses the response and returns a vector of image URLs.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt`: A string that describes the image to be generated.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
+    /// If there's an error, it returns a dynamic error.
     pub async fn create_image<S: Into<String>>(
         &mut self,
         prompt: S,
@@ -280,6 +244,21 @@ impl OpenAIClient<Image> {
         Ok(self._parse_response(&image_response))
     }
 
+    /// Modifies an existing image based on a textual description.
+    ///
+    /// This function sets the image and optionally the mask, then sets the prompt to the given string and sends a request to the OpenAI API to modify the image.
+    /// The function then parses the response and returns a vector of image URLs.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt`: A string that describes the modifications to be made to the image.
+    /// * `image_file_path`: A string that specifies the path to the image file to be modified.
+    /// * `mask`: An optional string that specifies the path to a mask file. If the mask is not provided, it is set to `None`.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
+    /// If there's an error, it returns a dynamic error.
     pub async fn edit_image<S: Into<String>>(
         &mut self,
         prompt: S,
@@ -325,6 +304,19 @@ impl OpenAIClient<Image> {
         Ok(part_stream)
     }
 
+    /// Generates variations of an existing image.
+    ///
+    /// This function sets the image and sends a request to the OpenAI API to create variations of the image.
+    /// The function then parses the response and returns a vector of image URLs.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_file_path`: A string that specifies the path to the image file.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `Result` with a vector of strings on success, each string being a URL to a new variation of the image.
+    /// If there's an error, it returns a dynamic error.
     pub async fn create_image_variation<S: Into<String>>(
         &mut self,
         image_file_path: S,
@@ -361,36 +353,32 @@ impl OpenAIClient<Image> {
         &mut self,
         url: S,
     ) -> Result<ImageResponse, Box<dyn Error + Send + Sync>> {
-        let file_name = self.config.image.clone().unwrap();
-        let file_part_stream = self._create_file_part(file_name).await?;
+        let file_name = self.config.image.as_ref().unwrap();
+        let file_part_stream = self._create_file_part(file_name.to_string()).await?;
         let mut form = Form::new().part("image", file_part_stream);
 
-        if self.config.prompt.is_some() {
-            form = form.text("prompt", self.config.prompt.clone().unwrap());
+        if let Some(prompt) = self.config.prompt.as_ref() {
+            form = form.text("prompt", prompt.clone());
         }
-        if self.config.mask.is_some() {
-            let mask_name = self.config.mask.clone().unwrap();
-            let mask_part_stream = self._create_file_part(mask_name).await?;
+        if let Some(mask_name) = self.config.mask.as_ref() {
+            let mask_part_stream = self._create_file_part(mask_name.to_string()).await?;
             form = form.part("mask", mask_part_stream);
         }
 
-        if self.config.response_format.is_some() {
-            form = form.text(
-                "response_format",
-                self.config.response_format.clone().unwrap(),
-            );
+        if let Some(response_format) = self.config.response_format.as_ref() {
+            form = form.text("response_format", response_format.clone());
         }
 
-        if self.config.size.is_some() {
-            form = form.text("size", self.config.size.clone().unwrap());
+        if let Some(size) = self.config.size.as_ref() {
+            form = form.text("size", size.clone());
         }
 
-        if self.config.n.is_some() {
-            form = form.text("n", self.config.n.unwrap().to_string());
+        if let Some(n) = self.config.n {
+            form = form.text("n", n.to_string());
         }
 
-        if self.config.user.is_some() {
-            form = form.text("user", self.config.user.clone().unwrap());
+        if let Some(user) = self.config.user.as_ref() {
+            form = form.text("user", user.clone());
         }
 
         let image_response: ImageResponse = self
@@ -413,46 +401,132 @@ impl OpenAIClient<Image> {
 impl OpenAIClient<Chat> {
     const OPENAI_API_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 
+    /// Allows to batch configure the AI assistant with the settings provided in the `Chat` struct.
+    ///
+    /// # Arguments
+    ///
+    /// * `config`: A `Chat` struct that contains the settings for the AI assistant.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the new configuration.
     pub fn with_config(mut self, config: Chat) -> Self {
         self.config = config;
         self
     }
 
+    /// Sets the model of the AI assistant.
+    ///
+    /// # Arguments
+    ///
+    /// * `model`: A string that specifies the model name to be used by the AI assistant.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified model.
     pub fn set_model<S: Into<String>>(mut self, model: S) -> Self {
         self.config.model = model.into();
         self
     }
 
+    /// Sets the maximum number of tokens that the AI model can generate in a single response.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_tokens`: An unsigned 64-bit integer that specifies the maximum number of tokens
+    /// that the AI model can generate in a single response.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified maximum number of tokens.
     pub fn set_max_tokens(mut self, max_tokens: u64) -> Self {
         self.config.max_tokens = Some(max_tokens);
         self
     }
 
+    /// Allows to set the chat history in a specific state.
+    ///
+    /// # Arguments
+    ///
+    /// * `messages`: A vector of `Message` structs.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified messages.
     pub fn set_messages(mut self, messages: Vec<Message>) -> Self {
         self.config.messages = messages;
         self
     }
 
+    /// Sets the temperature of the AI model's responses.
+    ///
+    /// The temperature setting adjusts the randomness of the AI's responses.
+    /// Higher values produce more random responses, while lower values produce more deterministic responses.
+    /// The allowed range of values is between 0.0 and 2.0, with 0 being the most deterministic and 1 being the most random.
+    ///
+    /// # Arguments
+    ///
+    /// * `temperature`: A float that specifies the temperature.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified temperature.
     pub fn set_temperature(mut self, temperature: f64) -> Self {
         self.config.temperature = Some(temperature);
         self
     }
 
+    /// Sets the streaming configuration of the AI assistant.
+    ///
+    /// If streaming is enabled, the AI assistant will fetch and process the AI's responses as they arrive.
+    /// If it's disabled, the assistant will collect all of the AI's responses at once and return them as a single response.
+    ///
+    /// # Arguments
+    ///
+    /// * `streamed`: A boolean that specifies whether streaming should be enabled.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified streaming setting.
     pub fn set_stream_responses(mut self, streamed: bool) -> Self {
         self.config.stream = Some(streamed);
         self
     }
 
+    /// Sets a primer message for the AI assistant.
+    ///
+    /// The primer message is inserted at the beginning of the `messages` vector in the `config` struct.
+    /// This can be used to prime the AI model with a certain context or instruction.
+    ///
+    /// # Arguments
+    ///
+    /// * `primer_msg`: A string that specifies the primer message.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified primer message.
     pub fn set_primer<S: Into<String>>(mut self, primer_msg: S) -> Self {
         let msg = Message::new(&MessageRole::System, primer_msg.into());
         self.config.messages.insert(0, msg);
         self
     }
 
+    /// Returns the last message in the AI assistant's configuration.
+    ///
+    /// # Returns
+    ///
+    /// This function returns an `Option` that contains a reference to the last `Message`
+    /// in the `config` struct if it exists, or `None` if it doesn't.
     pub fn get_last_message(&self) -> Option<&Message> {
         self.config.messages.last()
     }
 
+    /// Clears the messages in the AI assistant's configuration to start from a clean state.
+    /// This is only necessary in very specific cases.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with no messages in its configuration.
     pub fn clear_state(mut self) -> Self {
         self.config.messages.clear();
         self
@@ -513,29 +587,80 @@ impl OpenAIClient<Chat> {
         Ok(())
     }
 
-    pub async fn ask<S: Into<String>>(
+    /// Makes a request to OpenAI's GPT model and retrieves a response based on the provided `prompt`.
+    ///
+    /// This function accepts a prompt, converts it into a string, and sends a request to the OpenAI API.
+    /// Depending on the streaming configuration (`is_streamed`), the function either collects all of the AI's responses
+    /// at once, or fetches and processes them as they arrive.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt`: A value that implements `Into<String>`. This will be converted into a string and sent to the API as the
+    /// prompt for the AI model.
+    ///
+    /// * `persist_state`: If true, the function will push the AI's response to the `messages` vector in the `config` struct.
+    /// If false, it will remove the last message from the `messages` vector.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(String)`: A success value containing the AI's response as a string.
+    ///
+    /// * `Err(Box<dyn std::error::Error + Send + Sync>)`: An error value. This is a dynamic error, meaning it could represent
+    /// various kinds of failures. The function will return an error if any step in the process fails, such as making the HTTP request,
+    /// parsing the JSON response, or if there's an issue with the streaming process.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the HTTP request fails, the JSON response from the API cannot be parsed, or if
+    /// an error occurs during streaming.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    ///  
+    /// use aionic::openai::chat::Chat;
+    /// use aionic::openai::OpenAIClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///     let prompt = "Hello, world!";
+    ///     let mut inst = OpenAIClient::<Chat>::new();
+    ///     let result = inst.ask(prompt, true).await;
+    ///     match result {
+    ///         Ok(response) => println!("{}", response),
+    ///         Err(e) => println!("Error: {}", e),
+    ///     }
+    ///     Ok(())
+    ///  }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This function is `async` and must be awaited when called.
+    pub async fn ask<P: Into<Message>>(
         &mut self,
-        prompt: S,
+        prompt: P,
         persist_state: bool,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut answer_chunks: Vec<String> = Vec::new();
         let is_streamed = self.config.stream.unwrap_or(false);
-        self.config
-            .messages
-            .push(Message::new(&MessageRole::User, prompt));
-        let r = self._make_post_request(Self::OPENAI_API_COMPLETIONS_URL);
+        self.config.messages.push(prompt.into());
+        let mut r = self
+            ._make_post_request(Self::OPENAI_API_COMPLETIONS_URL)
+            .await?;
         if is_streamed {
-            let mut res = r.await?;
-            self._ask_openai_streamed(&mut res, &mut answer_chunks)
+            self._ask_openai_streamed(&mut r, &mut answer_chunks)
                 .await?;
         } else {
-            let r = r.await?.json::<Response>().await?;
-            for choice in r.choices.unwrap() {
-                if !self.disable_live_stream {
-                    print!("AI: {}\n", choice.message.content);
-                    io::stdout().flush()?;
+            let r = r.json::<ChatResponse>().await?;
+            if let Some(choices) = r.choices {
+                for choice in choices {
+                    if !self.disable_live_stream {
+                        print!("AI: {}\n", choice.message.content);
+                        io::stdout().flush()?;
+                    }
+                    answer_chunks.push(choice.message.content);
                 }
-                answer_chunks.push(choice.message.content);
             }
         }
 
@@ -550,6 +675,46 @@ impl OpenAIClient<Chat> {
         Ok(answer_text)
     }
 
+    /// Starts a chat session with the AI assistant.
+    ///
+    /// This function uses a Readline-style interface for input and output. The user types a message at the `>>> ` prompt,
+    /// and the message is sent to the AI assistant using the `ask` function. The AI's response is then printed to the console.
+    ///
+    /// If the user enters CTRL-C, the function prints "CTRL-C" and exits the chat session.
+    ///
+    /// If the user enters CTRL-D, the function prints "CTRL-D" and exits the chat session.
+    ///
+    /// If there's an error during readline, the function prints the error message and exits the chat session.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())`: A success value indicating that the chat session ended normally.
+    ///
+    /// * `Err(Box<dyn std::error::Error + Send + Sync>)`: An error value. This is a dynamic error, meaning it could represent
+    /// various kinds of failures. The function will return an error if any step in the process fails, such as reading a line
+    /// from the console, or if there's an error in the `ask` function.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the readline fails or if there's an error in the `ask` function.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use aionic::openai::chat::Chat;
+    /// use aionic::openai::OpenAIClient;
+    ///
+    /// let inst = OpenAIClient::<Chat>::new()
+    /// let result = inst.chat().await;
+    /// match result {
+    ///     Ok(()) => println!("Chat session ended."),
+    ///     Err(e) => println!("Error during chat session: {}", e),
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This function is `async` and must be awaited when called.
     pub async fn chat(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut rl = DefaultEditor::new()?;
         let prompt = ">>> ";
@@ -574,7 +739,6 @@ impl OpenAIClient<Chat> {
                 }
             }
         }
-        println!("{:?}", self.config.messages);
         Ok(())
     }
 }

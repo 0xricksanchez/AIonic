@@ -1,4 +1,9 @@
 use serde::{Deserialize, Serialize};
+
+/// Enum representing the format in which the response from OpenAI's Image API can be received.
+///
+/// This can either be a URL (Url) pointing to the generated image, or a Base64-encoded JSON string (Base64Json)
+/// that represents the image.
 pub enum ImageResponseFormat {
     Url,
     Base64Json,
@@ -13,21 +18,38 @@ impl ToString for ImageResponseFormat {
     }
 }
 
+/// Struct representing the size of an image.
+///
+/// It consists of the width and the height of the image, both represented as unsigned 64-bit integers.
 #[derive(Clone, Debug, Copy)]
 pub struct ImageSize {
+    /// The width of the image in pixels.
     pub width: u64,
+
+    /// The height of the image in pixels.
     pub height: u64,
 }
 
+/// Represents the response from an Image API call to OpenAI.
+///
+/// Contains fields that provide information about the creation time and the data associated with the generated image.
 #[derive(Deserialize, Debug)]
 pub struct ImageResponse {
+    /// UNIX timestamp indicating when the image was created.
     pub created: u64,
+
+    /// A vector of ImageData objects, each representing a generated image.
     pub data: Vec<ImageData>,
 }
 
+/// Represents the data associated with a single generated image in an Image API response.
+/// Only ever one of the fields is present in a single ImageData object.
 #[derive(Deserialize, Debug)]
 pub struct ImageData {
+    /// The URL of the generated image. This field is present when the response format is set to Url.
     pub url: Option<String>,
+
+    /// A Base64-encoded JSON string representing the generated image. This field is present when the response format is set to Base64Json.
     pub b64_json: Option<String>,
 }
 
@@ -53,20 +75,46 @@ impl ToString for ImageSize {
     }
 }
 
+/// Represents an Image object in the OpenAI Image API.
+///
+/// This struct includes fields like `prompt`, `n`, `size`, `response_format`, `user`, `image`, and `mask`.
+/// Each of these fields can be set according to the requirements of the Image API request.
+/// Optional fields are represented as `Option<T>`.
+///
+/// For more information check the official [openAI API documentation](https://platform.openai.com/docs/api-reference/images)
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Image {
+    /// A text description of the desired image(s). The maximum length is 1000 characters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+
+    /// The number of images to generate. Must be between 1 and 10.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u64>,
+
+    /// The size of the generated images. Must be one of 256x256, 512x512, or 1024x1024.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
+
+    /// The format in which the generated images are returned. Must be of type `ImageResponseFormat`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<String>,
+
+    /// A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+
+    /// Note: Only for edit/variation requests!
+    ///
+    /// The image to edit. Must be a valid PNG file, less than 4MB, and square.
+    /// If mask is not provided, image must have transparency, which will be used as the mask.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+
+    /// Note: Only for edit requests!
+    ///
+    /// An additional image whose fully transparent areas (e.g. where alpha is zero) indicate where
+    /// image should be edited. Must be a valid PNG file, less than 4MB, and have the same dimensions as image.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mask: Option<String>,
 }
@@ -85,5 +133,19 @@ impl Image {
 
     pub fn get_default_response_format() -> &'static str {
         Self::DEFAULT_RESPONSE_FORMAT
+    }
+
+    pub fn is_valid_size(size: &str) -> bool {
+        let valid_sizes = ["256x256", "512x512", "1024x1024"];
+        valid_sizes.contains(&size)
+    }
+
+    pub fn is_valid_response_format(response_format: &str) -> bool {
+        let valid_response_formats = ["url", "b64_json"];
+        valid_response_formats.contains(&response_format)
+    }
+
+    pub fn is_valid_n(n: u64) -> bool {
+        (1..=10).contains(&n)
     }
 }
