@@ -376,13 +376,9 @@ impl OpenAIClient<Image> {
             self.config.mask = Some(mask.into());
         }
         self.config.prompt = Some(prompt.into());
-        println!("{:?}", self.config);
-
         let image_response: ImageResponse = self
             ._make_file_upload_request(Self::OPENAI_API_IMAGE_EDIT_URL)
             .await?;
-        println!("{:?}", image_response);
-
         Ok(self._parse_response(&image_response))
     }
 
@@ -503,8 +499,8 @@ impl OpenAIClient<Chat> {
         self
     }
 
-    pub fn set_model(mut self, model: String) -> Self {
-        self.config.model = model;
+    pub fn set_model<S: Into<String>>(mut self, model: S) -> Self {
+        self.config.model = model.into();
         self
     }
 
@@ -536,6 +532,11 @@ impl OpenAIClient<Chat> {
 
     pub fn get_last_message(&self) -> Option<&Message> {
         self.config.messages.last()
+    }
+
+    pub fn clear_state(mut self) -> Self {
+        self.config.messages.clear();
+        self
     }
 
     fn _process_delta(
@@ -596,6 +597,7 @@ impl OpenAIClient<Chat> {
     pub async fn ask<S: Into<String>>(
         &mut self,
         prompt: S,
+        persist_state: bool,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut answer_chunks: Vec<String> = Vec::new();
         let is_streamed = self.config.stream.unwrap_or(false);
@@ -619,9 +621,13 @@ impl OpenAIClient<Chat> {
         }
 
         let answer_text = answer_chunks.join("");
-        self.config
-            .messages
-            .push(Message::new(&MessageRole::Assistant, &answer_text));
+        if persist_state {
+            self.config
+                .messages
+                .push(Message::new(&MessageRole::Assistant, &answer_text));
+        } else {
+            self.config.messages.pop();
+        }
         Ok(answer_text)
     }
 
@@ -632,7 +638,7 @@ impl OpenAIClient<Chat> {
             let readline = rl.readline(prompt);
             match readline {
                 Ok(line) => {
-                    self.ask(line).await?;
+                    self.ask(line, true).await?;
                     println!();
                 }
                 Err(ReadlineError::Interrupted) => {
@@ -774,14 +780,14 @@ mod tests {
     #[tokio::test]
     async fn test_single_request() {
         let mut client = OpenAIClient::<Chat>::new().set_stream_responses(false);
-        let reply = client.ask("Say this is a test!").await;
+        let reply = client.ask("Say this is a test!", false).await;
         assert_eq!(reply.unwrap(), "This is a test!");
     }
 
     #[tokio::test]
     async fn test_single_request_streamed() {
         let mut client = OpenAIClient::<Chat>::new();
-        let reply = client.ask("Say this is a test!").await;
+        let reply = client.ask("Say this is a test!", false).await;
         assert_eq!(reply.unwrap(), "This is a test!");
     }
 

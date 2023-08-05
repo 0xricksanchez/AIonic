@@ -30,7 +30,9 @@ models, all within the vibrant, performant world of Rust.
 
 ## Examples
 
-TODO
+The `examples/` folder houses a non exhaustive amount of API showcase examples.
+They can be tested by running `cargo run --example <name>` from the root
+directory of this project.
 
 ## Contributing
 
