@@ -1,3 +1,4 @@
+use crate::openai::misc::Usage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -5,7 +6,7 @@ use std::collections::HashMap;
 ///
 /// Contains fields that provide information about the model used, the choices made by the model,
 /// the unique ID for the API call, and usage data regarding the number of tokens processed.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Response {
     /// Unique ID for the API call.
     pub id: Option<String>,
@@ -26,23 +27,8 @@ pub struct Response {
     pub usage: Option<Usage>,
 }
 
-/// Represents the usage data from an API call.
-///
-/// This includes the number of tokens used for the prompt, the completion, and the total tokens.
-#[derive(Deserialize, Debug)]
-pub struct Usage {
-    /// Number of tokens used in the prompt.
-    pub prompt_tokens: u64,
-
-    /// Number of tokens used in the completion.
-    pub completion_tokens: u64,
-
-    /// Total number of tokens used in the API call.
-    pub total_tokens: u64,
-}
-
 /// Represents a choice made by the model in a chat API call.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Choice {
     /// The message that corresponds to the choice made.
     pub message: Message,
@@ -55,7 +41,7 @@ pub struct Choice {
 }
 
 /// Represents the response from a streaming chat model API call to OpenAI.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StreamedReponse {
     /// Unique ID for the API call.
     pub id: String,
@@ -74,7 +60,7 @@ pub struct StreamedReponse {
 }
 
 /// Represents a choice made by the model in a streaming chat API call.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StreamedChoices {
     /// Index of the choice in the list of choices.
     pub index: u64,
@@ -87,7 +73,7 @@ pub struct StreamedChoices {
 }
 
 /// Represents a change made by the model in a streaming chat API call.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Delta {
     /// Role of the author making the change.
     pub role: Option<String>,
@@ -216,6 +202,13 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum Stop {
+    String(String),
+    Array(Vec<String>),
+}
+
 /// This struct is used for chat completions with OpenAI's models.
 /// It contains all the parameters that can be set for an API request.
 ///
@@ -226,12 +219,11 @@ pub struct FunctionCall {
 ///
 /// # Example
 ///
-/// ```
+/// ```rust
 /// use aionic::openai::Chat;
 /// use aionic::openai::OpenAIConfig;
 ///
 /// let chat = Chat::default();
-///
 /// ```
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Chat {
@@ -274,7 +266,7 @@ pub struct Chat {
 
     /// Up to 4 sequences where the API will stop generating further tokens.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop: Option<String>,
+    pub stop: Option<Stop>,
 
     /// The maximum number of tokens to generate in the chat completion.
     /// The total length of input tokens and generated tokens is limited by the model's context length.
