@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::convert::TryFrom;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Response {
@@ -31,25 +32,30 @@ impl ToString for FileType {
     }
 }
 
-impl From<&str> for FileType {
-    fn from(input: &str) -> Self {
-        match input {
-            "mp3" => Self::Mp3,
-            "mp4" => Self::Mp4,
-            "mpeg" => Self::Mpeg,
-            "mpga" => Self::Mpga,
-            "m4a" => Self::M4a,
-            "wav" => Self::Wav,
-            "webm" => Self::Webm,
-            _ => panic!("Invalid file type"),
+impl TryFrom<&str> for FileType {
+    type Error = String; // You can define your own error type here if you prefer.
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "mp3" => Ok(Self::Mp3),
+            "mp4" => Ok(Self::Mp4),
+            "mpeg" => Ok(Self::Mpeg),
+            "mpga" => Ok(Self::Mpga),
+            "m4a" => Ok(Self::M4a),
+            "wav" => Ok(Self::Wav),
+            "webm" => Ok(Self::Webm),
+            _ => Err(format!("Invalid file type: {value}")),
         }
     }
 }
 
 impl FileType {
-    pub fn get_file_type(file: &str) -> Self {
-        let file_type = file.split('.').last().unwrap();
-        Self::from(file_type)
+    pub fn get_file_type(file: &str) -> Result<Self, String> {
+        if let Some(mime_type) = file.split('.').last() {
+            Self::try_from(mime_type)
+        } else {
+            Err(format!("Invalid file type: {file}"))
+        }
     }
 }
 
@@ -75,22 +81,24 @@ impl ToString for ResponseFormat {
     }
 }
 
-impl From<&str> for ResponseFormat {
-    fn from(input: &str) -> Self {
+impl TryFrom<&str> for ResponseFormat {
+    type Error = String; // You can define your own error type here if you prefer.
+
+    fn try_from(input: &str) -> Result<Self, Self::Error> {
         match input {
-            "json" => Self::Json,
-            "text" => Self::Text,
-            "srt" => Self::Srt,
-            "verbose_json" => Self::VerboseJson,
-            "vtt" => Self::Vtt,
-            _ => panic!("Invalid response format"),
+            "json" => Ok(Self::Json),
+            "text" => Ok(Self::Text),
+            "srt" => Ok(Self::Srt),
+            "verbose_json" => Ok(Self::VerboseJson),
+            "vtt" => Ok(Self::Vtt),
+            _ => Err(format!("Invalid response format: {input}")),
         }
     }
 }
 
 impl ResponseFormat {
-    pub fn get_response_format(format: &str) -> Self {
-        Self::from(format)
+    pub fn get_response_format(format: &str) -> Result<Self, String> {
+        Self::try_from(format)
     }
 
     pub fn get_default_response_format() -> Self {
@@ -160,20 +168,20 @@ impl Audio {
         ResponseFormat::get_default_response_format()
     }
 
-    pub fn get_response_format(format: &str) -> ResponseFormat {
+    pub fn get_response_format(format: &str) -> Result<ResponseFormat, String> {
         ResponseFormat::get_response_format(format)
     }
 
-    pub fn is_file_type_supported(file_name: &str) -> bool {
-        let file_type = FileType::get_file_type(file_name);
+    pub fn is_file_type_supported(file_name: &str) -> Result<bool, String> {
+        let file_type = FileType::get_file_type(file_name)?;
         match file_type {
-            FileType::Mp3 => true,
-            FileType::Mp4 => true,
-            FileType::Mpeg => true,
-            FileType::Mpga => true,
-            FileType::M4a => true,
-            FileType::Wav => true,
-            FileType::Webm => true,
+            FileType::Mp3
+            | FileType::Mp4
+            | FileType::Mpeg
+            | FileType::Mpga
+            | FileType::M4a
+            | FileType::Wav
+            | FileType::Webm => Ok(true),
         }
     }
 

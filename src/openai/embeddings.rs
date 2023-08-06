@@ -11,57 +11,57 @@ pub enum InputType {
 
 impl InputType {
     pub fn is_single_string(&self) -> bool {
-        matches!(self, InputType::SingleString(_))
+        matches!(self, Self::SingleString(_))
     }
 
     pub fn is_multiple_strings(&self) -> bool {
-        matches!(self, InputType::MultipleStrings(_))
+        matches!(self, Self::MultipleStrings(_))
     }
 
     pub fn is_multiple_tokens(&self) -> bool {
-        matches!(self, InputType::MultipleTokens(_))
+        matches!(self, Self::MultipleTokens(_))
     }
 
     pub fn new_single_string(input: String) -> Self {
-        InputType::SingleString(input)
+        Self::SingleString(input)
     }
 
     pub fn new_multiple_strings(input: Vec<String>) -> Self {
-        InputType::MultipleStrings(input)
+        Self::MultipleStrings(input)
     }
 
     pub fn new_multiple_tokens(input: Vec<u64>) -> Self {
-        InputType::MultipleTokens(input)
+        Self::MultipleTokens(input)
     }
 }
 
 impl From<String> for InputType {
     fn from(input: String) -> Self {
-        InputType::SingleString(input)
+        Self::SingleString(input)
     }
 }
 
 impl From<&[u64]> for InputType {
     fn from(input: &[u64]) -> Self {
-        InputType::MultipleTokens(input.to_vec())
+        Self::MultipleTokens(input.to_vec())
     }
 }
 
 impl From<Vec<String>> for InputType {
     fn from(input: Vec<String>) -> Self {
-        InputType::MultipleStrings(input)
+        Self::MultipleStrings(input)
     }
 }
 
 impl From<Vec<u64>> for InputType {
     fn from(input: Vec<u64>) -> Self {
-        InputType::MultipleTokens(input)
+        Self::MultipleTokens(input)
     }
 }
 
 impl From<&str> for InputType {
     fn from(input: &str) -> Self {
-        InputType::SingleString(input.to_string())
+        Self::SingleString(input.to_string())
     }
 }
 
@@ -80,7 +80,7 @@ pub struct Data {
     pub index: u64,
 }
 
-/// OpenAIs embeddings that can be used to measure the relatedness of text strings.
+/// `OpenAI`s embeddings that can be used to measure the relatedness of text strings.
 /// Embeddings are commonly used for:
 ///  
 ///  * Search (where results are ranked by relevance to a query string)
@@ -109,7 +109,7 @@ pub struct Embedding {
     /// pass an array of strings or array of token arrays.
     pub input: InputType,
 
-    /// A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse
+    /// A unique identifier representing your end-user, which can help `OpenAI` to monitor and detect abuse
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
 }

@@ -2,7 +2,7 @@ use crate::openai::misc::Usage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Represents the response from a chat model API call to OpenAI.
+/// Represents the response from a chat model API call to `OpenAI`.
 ///
 /// Contains fields that provide information about the model used, the choices made by the model,
 /// the unique ID for the API call, and usage data regarding the number of tokens processed.
@@ -40,7 +40,7 @@ pub struct Choice {
     pub index: u64,
 }
 
-/// Represents the response from a streaming chat model API call to OpenAI.
+/// Represents the response from a streaming chat model API call to `OpenAI`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StreamedReponse {
     /// Unique ID for the API call.
@@ -113,12 +113,12 @@ impl<T: Into<String>> From<T> for MessageRole {
     }
 }
 
-/// Represents a single Message exchanged with the OpenAI API during a conversational model session.
+/// Represents a single Message exchanged with the `OpenAI` API during a conversational model session.
 ///
 /// `Message` struct is used to encapsulate the details of an individual message in the conversation. This includes the role of the author,
 /// the content of the message, the name of the author if the role is 'function', and information about any function that should be called.
 ///
-/// Each message sent or received in a conversational model session with OpenAI API will be represented by an instance of this struct.
+/// Each message sent or received in a conversational model session with `OpenAI` API will be represented by an instance of this struct.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Message {
     /// The role of the messages author. One of system, user, assistant, or function.
@@ -142,7 +142,7 @@ pub struct Message {
 impl Message {
     /// Constructs a new `Message` instance.
     ///
-    /// This function is responsible for creating a new message object that will be sent to or received from the OpenAI API.
+    /// This function is responsible for creating a new message object that will be sent to or received from the `OpenAI` API.
     ///
     /// # Arguments
     ///
@@ -209,7 +209,7 @@ pub enum Stop {
     Array(Vec<String>),
 }
 
-/// This struct is used for chat completions with OpenAI's models.
+/// This struct is used for chat completions with `OpenAI`'s models.
 /// It contains all the parameters that can be set for an API request.
 ///
 /// All fields with an `Option` type can be omitted from the JSON payload,
@@ -293,7 +293,7 @@ pub struct Chat {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub logit_bias: Option<HashMap<String, f32>>,
 
-    /// A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse.
+    /// A unique identifier representing your end-user, which can help `OpenAI` to monitor and detect abuse.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
 }
