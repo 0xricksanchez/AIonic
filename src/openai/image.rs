@@ -31,10 +31,12 @@ pub struct Size {
 }
 
 impl Size {
+    /// Creates a new Size object with the given width and height.
     pub fn new(width: u64, height: u64) -> Self {
         Self { width, height }
     }
 
+    /// Resizes the image represented by this Size object.
     pub fn resize(mut self, width: Option<u64>, height: Option<u64>) -> Self {
         if let Some(width) = width {
             self.width = width;

@@ -1,37 +1,27 @@
 pub mod chat;
+pub mod embeddings;
 pub mod image;
+mod misc;
 
-pub use chat::{Chat, Message, MessageRole, Response, StreamedReponse};
-pub use image::{Image, Response as ImageResponse, ResponseDataType, Size};
+pub use chat::{Chat, Message, MessageRole};
+use chat::{Response, StreamedReponse};
+pub use embeddings::{Embedding, InputType, Response as EmbeddingResponse};
+use image::Size;
+pub use image::{Image, Response as ImageResponse, ResponseDataType};
+use misc::ModelsResponse;
+pub use misc::{Model, Usage};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Body, Client, IntoUrl};
 use tokio_util::codec::{BytesCodec, FramedRead};
 
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::env;
 use std::error::Error;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::exit;
-
-// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-// = STRUCT DEFINITIONS
-// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-
-#[derive(Debug, Deserialize)]
-pub struct Model {
-    pub id: String,
-    pub object: String,
-    pub owned_by: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ModelsResponse {
-    pub data: Vec<Model>,
-    pub object: String,
-}
 
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // = OpenAIConfig TRAIT
@@ -76,15 +66,37 @@ impl OpenAIConfig for Image {
     }
 }
 
+impl OpenAIConfig for Embedding {
+    fn default() -> Self {
+        Self {
+            model: Self::get_default_model().into(),
+            input: InputType::SingleString("".into()),
+            user: None,
+        }
+    }
+}
+
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // = OpenAIClient SHARED IMPLEMENTATION
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
+/// The OpenAIClient struct is the main entry point for interacting with the OpenAI API.
+/// It contains the API key, the client, and the configuration for the API call,
+/// such as the chat completion endpoint. It also contains a boolean flag to disable
+/// the live stream of the chat endpoint.
 #[derive(Clone, Debug)]
 pub struct OpenAIClient<C: OpenAIConfig> {
+    /// The HTTP client used to make requests to the OpenAI API.
     pub client: Client,
+
+    /// The API key used to authenticate with the OpenAI API.
     pub api_key: String,
+
+    /// A boolean flag to disable the live stream of the chat endpoint.
     pub disable_live_stream: bool,
+
+    /// An endpoint specific configuration struct that holds all necessary parameters
+    /// for the API call.
     pub config: C,
 }
 
@@ -114,6 +126,23 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
         )
     }
 
+    /// Allows to batch configure the AI assistant with the settings provided in the `Chat` struct.
+    ///
+    /// # Arguments
+    ///
+    /// * `config`: A `Chat` struct that contains the settings for the AI assistant.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the new configuration.
+    pub fn with_config(mut self, config: C) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Disables standard output for the instance of `OpenAi`, which is enabled by default.
+    /// This is only interesting for the chat completion, as it will otherwise print the
+    /// messages of the AI assistant to the terminal.
     pub fn disable_stdout(mut self) -> Self {
         self.disable_live_stream = true;
         self
@@ -148,6 +177,37 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
         Ok(res)
     }
 
+    /// Fetches a list of available models from the OpenAI API.
+    ///
+    /// This method sends a GET request to the OpenAI API and returns a vector of identifiers of
+    /// all available models.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is:
+    /// * `Ok` if the request was successful, carrying a `Vec<String>` of model identifiers.
+    /// * `Err` if the request or the parsing failed, carrying the error of type `Box<dyn std::error::Error + Send + Sync>`.
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if the GET request fails, or if the response from the
+    /// OpenAI API cannot be parsed into a `ModelsResponse`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use aionic::openai::OpenAiClient;
+    ///
+    /// let mut client = OpenAiClient::new();
+    /// match client.models().await {
+    ///     Ok(models) => println!("Models: {:?}", models),
+    ///     Err(e) => println!("Error: {}", e),
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This method is `async` and needs to be awaited.
     pub async fn models(
         &mut self,
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
@@ -165,6 +225,40 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
         Ok(model_ids)
     }
 
+    /// Fetches a specific model by identifier from the OpenAI API.
+    ///
+    /// This method sends a GET request to the OpenAI API for a specific model and returns the `Model`.
+    ///
+    /// # Parameters
+    ///
+    /// * `model`: A `&str` that represents the name of the model to fetch.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is:
+    /// * `Ok` if the request was successful, carrying the `Model`.
+    /// * `Err` if the request or the parsing failed, carrying the error of type `Box<dyn std::error::Error + Send + Sync>`.
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if the GET request fails, or if the response from the
+    /// OpenAI API cannot be parsed into a `Model`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use aionic::openai::OpenAiClient;
+    ///
+    /// let mut client = OpenAi::new();
+    /// match client.check_model("gpt-3.5-turbo").await {
+    ///     Ok(model) => println!("Model: {:?}", model),
+    ///     Err(e) => println!("Error: {}", e),
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This method is `async` and needs to be awaited.
     pub async fn check_model(
         &mut self,
         model: &str,
@@ -179,7 +273,6 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
                 format!("Error: {}", resp.status()),
             )));
         }
-
         let model: Model = resp.json().await?;
         Ok(model)
     }
@@ -190,27 +283,31 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 impl OpenAIClient<Image> {
+    const OPENAI_API_IMAGE_GEN_URL: &str = "https://api.openai.com/v1/images/generations";
+    const OPENAI_API_IMAGE_EDIT_URL: &str = "https://api.openai.com/v1/images/edits";
+    const OPENAI_API_IMAGE_VARIATION_URL: &str = "https://api.openai.com/v1/images/variations";
+
+    /// Allows setting the return format of the response. `ResponseDataType` is an enum with the
+    /// following variants:
+    /// * `Url`: The response will be a vector of URLs to the generated images.
+    /// * `Base64Json`: The response will be a vector of base64 encoded images.
     pub fn set_response_format(mut self, response_format: &ResponseDataType) -> Self {
         self.config.response_format = Some(response_format.to_string());
         self
     }
 
+    /// Allows setting the number of images to be generated.
     pub fn set_max_images(mut self, number_of_images: u64) -> Self {
         self.config.n = Some(number_of_images);
         self
     }
 
+    /// Allows setting the dimensions of the generated images.
     pub fn set_size(mut self, size: &Size) -> Self {
         self.config.size = Some(size.to_string());
         self
     }
-}
 
-impl OpenAIClient<Image> {
-    const OPENAI_API_IMAGE_GEN_URL: &str = "https://api.openai.com/v1/images/generations";
-    const OPENAI_API_IMAGE_EDIT_URL: &str = "https://api.openai.com/v1/images/edits";
-    const OPENAI_API_IMAGE_VARIATION_URL: &str = "https://api.openai.com/v1/images/variations";
-    ///
     /// Generates an image based on a textual description.
     ///
     /// This function sets the prompt to the given string and sends a request to the OpenAI API to create an image.
@@ -413,20 +510,6 @@ impl OpenAIClient<Image> {
 
 impl OpenAIClient<Chat> {
     const OPENAI_API_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
-
-    /// Allows to batch configure the AI assistant with the settings provided in the `Chat` struct.
-    ///
-    /// # Arguments
-    ///
-    /// * `config`: A `Chat` struct that contains the settings for the AI assistant.
-    ///
-    /// # Returns
-    ///
-    /// This function returns the instance of the AI assistant with the new configuration.
-    pub fn with_config(mut self, config: Chat) -> Self {
-        self.config = config;
-        self
-    }
 
     /// Sets the model of the AI assistant.
     ///
@@ -637,8 +720,8 @@ impl OpenAIClient<Chat> {
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ///     let prompt = "Hello, world!";
-    ///     let mut inst = OpenAIClient::<Chat>::new();
-    ///     let result = inst.ask(prompt, true).await;
+    ///     let mut client = OpenAIClient::<Chat>::new();
+    ///     let result = client.ask(prompt, true).await;
     ///     match result {
     ///         Ok(response) => println!("{}", response),
     ///         Err(e) => println!("Error: {}", e),
@@ -719,8 +802,8 @@ impl OpenAIClient<Chat> {
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    ///     let mut inst = OpenAIClient::<Chat>::new();
-    ///     let result = inst.chat().await;
+    ///     let mut client = OpenAIClient::<Chat>::new();
+    ///     let result = client.chat().await;
     ///     match result {
     ///         Ok(()) => println!("Chat session ended."),
     ///         Err(e) => println!("Error during chat session: {}", e),
@@ -757,6 +840,73 @@ impl OpenAIClient<Chat> {
             }
         }
         Ok(())
+    }
+}
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAIClient EMBEDDINGS IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+impl OpenAIClient<Embedding> {
+    const OPENAI_API_EMBEDDINGS_URL: &str = "https://api.openai.com/v1/embeddings";
+
+    /// Sends a POST request to the OpenAI API to get embeddings for the given prompt.
+    ///
+    /// This method accepts a prompt of type `S` which can be converted into `InputType`
+    /// (an enum that encapsulates the different types of possible inputs). The method converts
+    /// the provided prompt into `InputType` and assigns it to the `input` field of the `config`
+    /// instance variable. It then sends a POST request to the OpenAI API and attempts to parse
+    /// the response as `EmbeddingResponse`.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `S`: The type of the prompt. Must implement the `Into<InputType>` trait.
+    ///
+    /// # Parameters
+    ///
+    /// * `prompt`: The prompt for which to get embeddings. Can be a `String`, a `Vec<String>`,
+    /// a `Vec<u64>`, or a `&str` that is converted into an `InputType`.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is:
+    /// * `Ok` if the request was successful, carrying the `EmbeddingResponse` which contains the embeddings.
+    /// * `Err` if the request or the parsing failed, carrying the error of type `Box<dyn std::error::Error + Send + Sync>`.
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if the POST request fails, or if the response from the
+    /// OpenAI API cannot be parsed into an `EmbeddingResponse`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use aionic::openai::embeddings::Embedding;
+    /// use aionic::openai::OpenAIClient;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///     let mut client = OpenAIClient::<Embedding>::new();
+    ///     let prompt = "Hello, world!";
+    ///     match client.embed(prompt).await {
+    ///         Ok(response) => println!("Embeddings: {:?}", response),
+    ///         Err(e) => println!("Error: {}", e),
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This method is `async` and needs to be awaited.
+    pub async fn embed<S: Into<InputType>>(
+        &mut self,
+        prompt: S,
+    ) -> Result<EmbeddingResponse, Box<dyn std::error::Error + Send + Sync>> {
+        self.config.input = prompt.into();
+        let r = self
+            ._make_post_request(Self::OPENAI_API_EMBEDDINGS_URL)
+            .await?;
+        let embedding = r.json::<EmbeddingResponse>().await?;
+        Ok(embedding)
     }
 }
 
@@ -847,5 +997,15 @@ mod tests {
             .await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_embedding() {
+        let mut client = OpenAIClient::<Embedding>::new();
+        let embedding = client
+            .embed("The food was delicious and the waiter...")
+            .await;
+        assert!(embedding.is_ok());
+        assert!(!embedding.unwrap().data.is_empty());
     }
 }

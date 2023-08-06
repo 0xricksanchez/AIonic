@@ -11,6 +11,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ask(message, true) // <-- notice the change here
         .await?;
 
-    client.ask("What did I jsut ask you earlier?", true).await?;
+    client.ask("What did I just ask you earlier?", true).await?;
     Ok(())
 }
