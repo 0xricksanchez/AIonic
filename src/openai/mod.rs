@@ -1,8 +1,12 @@
+pub mod audio;
 pub mod chat;
 pub mod embeddings;
 pub mod image;
 mod misc;
 
+pub use audio::Audio;
+
+use audio::{Response as AudioResponse, ResponseFormat as AudioResponseFormat};
 pub use chat::{Chat, Message, MessageRole};
 use chat::{Response, StreamedReponse};
 pub use embeddings::{Embedding, InputType, Response as EmbeddingResponse};
@@ -72,6 +76,19 @@ impl OpenAIConfig for Embedding {
             model: Self::get_default_model().into(),
             input: InputType::SingleString("".into()),
             user: None,
+        }
+    }
+}
+
+impl OpenAIConfig for Audio {
+    fn default() -> Self {
+        Self {
+            file: "".to_string(),
+            model: Audio::get_default_model().into(),
+            prompt: None,
+            response_format: Some(AudioResponseFormat::get_default_response_format()),
+            temperature: Some(0.0),
+            language: None,
         }
     }
 }
@@ -148,6 +165,10 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
         self
     }
 
+    pub fn is_valid_temperature(&mut self, temperature: f64, limit: f64) -> bool {
+        (0.0..=limit).contains(&temperature)
+    }
+
     async fn _make_post_request<S: IntoUrl + Send + Sync>(
         &mut self,
         url: S,
@@ -172,6 +193,21 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
             .get(url)
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+        Ok(res)
+    }
+
+    async fn _make_form_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+        form: Form,
+    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
+        let res = self
+            .client
+            .post(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .multipart(form)
             .send()
             .await?;
         Ok(res)
@@ -276,6 +312,73 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAIClient<C> {
         let model: Model = resp.json().await?;
         Ok(model)
     }
+
+    /// Creates a file upload part for a multi-part upload operation.
+    ///
+    /// This method reads the file at the given path, prepares it for uploading, and
+    /// returns a `Part` that represents this file in the multi-part upload operation.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `P`: The type of the file path. Must implement the `AsRef<Path>` trait.
+    ///
+    /// # Parameters
+    ///
+    /// * `path`: The path of the file to upload. This can be any type that implements `AsRef<Path>`.
+    ///
+    /// # Returns
+    ///
+    /// A `Result` which is:
+    /// * `Ok` if the file was read successfully and the `Part` was created, carrying the `Part`.
+    /// * `Err` if there was an error reading the file or creating the `Part`, carrying the error of type `Box<dyn Error + Send + Sync>`.
+    ///
+    /// # Errors
+    ///
+    /// This method will return an error if there was an error reading the file at the given path,
+    /// or if there was an error creating the `Part` (for example, if the MIME type was not recognized).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use aionic::openai::OpenAiClient;
+    ///
+    /// let mut client = OpenAi::new();
+    /// match client.create_file_upload_part("path/to/file.txt").await {
+    ///     Ok(part) => println!("Part created successfully."),
+    ///     Err(e) => println!("Error: {}", e),
+    /// }
+    /// ```
+    ///
+    /// # Note
+    ///
+    /// This method is `async` and needs to be awaited.
+    pub async fn create_file_upload_part<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<Part, Box<dyn Error + Send + Sync>> {
+        let file_name = path.as_ref().to_str().unwrap().to_string();
+        let streamed_body = self._get_streamed_body(path).await?;
+        let part_stream = Part::stream(streamed_body)
+            .file_name(file_name)
+            .mime_str("application/octet-stream")?;
+        Ok(part_stream)
+    }
+
+    async fn _get_streamed_body<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+    ) -> Result<Body, Box<dyn Error + Send + Sync>> {
+        if !path.as_ref().exists() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Image not found",
+            )));
+        }
+        let file_stream_body = tokio::fs::File::open(path).await?;
+        let stream = FramedRead::new(file_stream_body, BytesCodec::new());
+        let body = Body::wrap_stream(stream);
+        Ok(body)
+    }
 }
 
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -321,7 +424,7 @@ impl OpenAIClient<Image> {
     ///
     /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
     /// If there's an error, it returns a dynamic error.
-    pub async fn create_image<S: Into<String>>(
+    pub async fn create<S: Into<String>>(
         &mut self,
         prompt: S,
     ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
@@ -356,7 +459,7 @@ impl OpenAIClient<Image> {
     ///
     /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
     /// If there's an error, it returns a dynamic error.
-    pub async fn edit_image<S: Into<String>>(
+    pub async fn edit<S: Into<String>>(
         &mut self,
         prompt: S,
         image_file_path: S,
@@ -369,14 +472,17 @@ impl OpenAIClient<Image> {
         self.config.prompt = Some(prompt.into());
 
         if !image::Image::is_valid_n(self.config.n.unwrap()) {
+            // TODO: Add a warning here
             self.config.n = Some(image::Image::get_default_n());
         }
 
         if !image::Image::is_valid_size(self.config.size.as_ref().unwrap()) {
+            // TODO: Add a warning here
             self.config.size = Some(image::Image::get_default_size().into());
         }
 
         if !image::Image::is_valid_response_format(self.config.response_format.as_ref().unwrap()) {
+            // TODO: Add a warning here
             self.config.response_format = Some(image::Image::get_default_response_format().into());
         }
 
@@ -384,34 +490,6 @@ impl OpenAIClient<Image> {
             ._make_file_upload_request(Self::OPENAI_API_IMAGE_EDIT_URL)
             .await?;
         Ok(self._parse_response(&image_response))
-    }
-
-    async fn _get_streamed_body<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-    ) -> Result<Body, Box<dyn Error + Send + Sync>> {
-        if !path.as_ref().exists() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Image not found",
-            )));
-        }
-        let file_stream_body = tokio::fs::File::open(path).await?;
-        let stream = FramedRead::new(file_stream_body, BytesCodec::new());
-        let body = Body::wrap_stream(stream);
-        Ok(body)
-    }
-
-    async fn _create_file_part<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-    ) -> Result<Part, Box<dyn Error + Send + Sync>> {
-        let file_name = path.as_ref().to_str().unwrap().to_string();
-        let streamed_body = self._get_streamed_body(path).await?;
-        let part_stream = Part::stream(streamed_body)
-            .file_name(file_name)
-            .mime_str("application/octet-stream")?;
-        Ok(part_stream)
     }
 
     /// Generates variations of an existing image.
@@ -427,7 +505,7 @@ impl OpenAIClient<Image> {
     ///
     /// This function returns a `Result` with a vector of strings on success, each string being a URL to a new variation of the image.
     /// If there's an error, it returns a dynamic error.
-    pub async fn create_image_variation<S: Into<String>>(
+    pub async fn variation<S: Into<String>>(
         &mut self,
         image_file_path: S,
     ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
@@ -464,14 +542,14 @@ impl OpenAIClient<Image> {
         url: S,
     ) -> Result<ImageResponse, Box<dyn Error + Send + Sync>> {
         let file_name = self.config.image.as_ref().unwrap();
-        let file_part_stream = self._create_file_part(file_name.to_string()).await?;
+        let file_part_stream = self.create_file_upload_part(file_name.to_string()).await?;
         let mut form = Form::new().part("image", file_part_stream);
 
         if let Some(prompt) = self.config.prompt.as_ref() {
             form = form.text("prompt", prompt.clone());
         }
         if let Some(mask_name) = self.config.mask.as_ref() {
-            let mask_part_stream = self._create_file_part(mask_name.to_string()).await?;
+            let mask_part_stream = self.create_file_upload_part(mask_name.to_string()).await?;
             form = form.part("mask", mask_part_stream);
         }
 
@@ -491,15 +569,9 @@ impl OpenAIClient<Image> {
             form = form.text("user", user.clone());
         }
 
-        let image_response: ImageResponse = self
-            .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .multipart(form)
-            .send()
-            .await?
-            .json()
-            .await?;
+        let image_response: ImageResponse =
+            self._make_form_request(url, form).await?.json().await?;
+
         Ok(image_response)
     }
 }
@@ -741,6 +813,12 @@ impl OpenAIClient<Chat> {
         let mut answer_chunks: Vec<String> = Vec::new();
         let is_streamed = self.config.stream.unwrap_or(false);
         self.config.messages.push(prompt.into());
+        if let Some(temp) = self.config.temperature {
+            // TODO: Add a log warning
+            if !self.is_valid_temperature(temp, 2.0) {
+                self.config.temperature = Some(2.0);
+            }
+        }
         let mut r = self
             ._make_post_request(Self::OPENAI_API_COMPLETIONS_URL)
             .await?;
@@ -846,6 +924,7 @@ impl OpenAIClient<Chat> {
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // = OpenAIClient EMBEDDINGS IMPLEMENTATION
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
 impl OpenAIClient<Embedding> {
     const OPENAI_API_EMBEDDINGS_URL: &str = "https://api.openai.com/v1/embeddings";
 
@@ -910,6 +989,146 @@ impl OpenAIClient<Embedding> {
     }
 }
 
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAIClient AUDIO IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+impl OpenAIClient<Audio> {
+    const OPENAI_API_TRANSCRIPTION_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
+    const OPENAI_API_TRANSLATION_URL: &str = "https://api.openai.com/v1/audio/translations";
+
+    fn _is_valid_mime_time(&mut self) -> bool {
+        Audio::is_file_type_supported(&self.config.file)
+    }
+
+    fn _is_valid_model(&mut self) -> bool {
+        self.config.model == "whisper-1"
+    }
+
+    fn _is_file_valid<P: AsRef<Path>>(
+        &mut self,
+        audio_file: P,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !audio_file.as_ref().exists() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Audio file not found: {}", audio_file.as_ref().display()),
+            )));
+        }
+        let audio_file_str = match audio_file.as_ref().to_str() {
+            Some(s) => s,
+            None => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Invalid audio file path",
+                )))
+            }
+        };
+        self.config.file = audio_file_str.to_string();
+        if !self._is_valid_mime_time() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Invalid audio file type. Supported types are {:?}",
+                    Audio::get_supported_file_types()
+                ),
+            )));
+        }
+        Ok(())
+    }
+
+    fn _sanity_checks(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(temp) = self.config.temperature {
+            if !self.is_valid_temperature(temp, 1.0) {
+                // TODO: Log warning
+                self.config.temperature = Some(1.0);
+            }
+        }
+
+        if !self._is_valid_model() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Invalid model. Supported models are {:?}",
+                    Audio::get_supported_models()
+                ),
+            )));
+        }
+
+        if let Some(lang) = &self.config.language {
+            if !Audio::is_valid_language(lang) {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "Invalid language code. Supported language codes are {:?}",
+                        Audio::ISO_639_1_CODES
+                    ),
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    async fn _form_builder(&mut self) -> Result<Form, Box<dyn std::error::Error + Send + Sync>> {
+        let file_part_stream = self
+            .create_file_upload_part(self.config.file.clone())
+            .await?;
+        let mut form = Form::new().part("file", file_part_stream);
+        form = form.text("model", self.config.model.clone());
+
+        if let Some(prompt) = self.config.prompt.as_ref() {
+            form = form.text("prompt", prompt.clone());
+        }
+
+        if let Some(response_format) = self.config.response_format.as_ref() {
+            form = form.text("response_format", response_format.to_string());
+        }
+
+        if let Some(temp) = self.config.temperature {
+            form = form.text("temperature", temp.to_string());
+        }
+        Ok(form)
+    }
+
+    pub async fn transcribe<P: AsRef<Path>>(
+        &mut self,
+        audio_file: P,
+    ) -> Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>> {
+        self._is_file_valid(audio_file)?;
+        self._sanity_checks()?;
+        let mut form = self._form_builder().await?;
+
+        if let Some(lang) = self.config.language.clone() {
+            form = form.text("language", lang);
+        }
+
+        let transcription: AudioResponse = self
+            ._make_form_request(Self::OPENAI_API_TRANSCRIPTION_URL, form)
+            .await?
+            .json()
+            .await?;
+        Ok(transcription)
+    }
+
+    pub async fn translate<P: AsRef<Path>>(
+        &mut self,
+        audio_file: P,
+    ) -> Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>> {
+        self._is_file_valid(audio_file)?;
+        self._sanity_checks()?;
+        if self.config.language.is_some() {
+            self.config.language = None;
+        }
+        let form = self._form_builder().await?;
+        let translation: AudioResponse = self
+            ._make_form_request(Self::OPENAI_API_TRANSLATION_URL, form)
+            .await?
+            .json()
+            .await?;
+        Ok(translation)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,9 +1172,7 @@ mod tests {
     #[tokio::test]
     async fn test_create_single_image_url() {
         let mut client = OpenAIClient::<Image>::new();
-        let images = client
-            .create_image("A beautiful sunset over the sea.")
-            .await;
+        let images = client.create("A beautiful sunset over the sea.").await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 1);
     }
@@ -964,7 +1181,7 @@ mod tests {
     async fn test_create_multiple_image_urls() {
         let mut client = OpenAIClient::<Image>::new().set_max_images(2);
         let images = client
-            .create_image("A logo for a library written in Rust that deals with AI")
+            .create("A logo for a library written in Rust that deals with AI")
             .await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 2);
@@ -974,9 +1191,7 @@ mod tests {
     async fn test_create_image_b64_json() {
         let mut client =
             OpenAIClient::<Image>::new().set_response_format(&ResponseDataType::Base64Json);
-        let images = client
-            .create_image("A beautiful sunset over the sea.")
-            .await;
+        let images = client.create("A beautiful sunset over the sea.").await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 1);
     }
@@ -984,7 +1199,7 @@ mod tests {
     #[tokio::test]
     async fn test_image_variation() {
         let mut client = OpenAIClient::<Image>::new();
-        let images = client.create_image_variation("./img/logo.png").await;
+        let images = client.variation("./img/logo.png").await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 1);
     }
@@ -993,7 +1208,7 @@ mod tests {
     async fn test_image_edit() {
         let mut client = OpenAIClient::<Image>::new();
         let images = client
-            .edit_image("Make the background transparent", "./img/logo.png", None)
+            .edit("Make the background transparent", "./img/logo.png", None)
             .await;
         assert!(images.is_ok());
         assert_eq!(images.unwrap().len(), 1);
@@ -1007,5 +1222,21 @@ mod tests {
             .await;
         assert!(embedding.is_ok());
         assert!(!embedding.unwrap().data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_transcribe() {
+        let mut client = OpenAIClient::<Audio>::new();
+        let transcribe = client.transcribe("examples/samples/sample-1.mp3").await;
+        assert!(transcribe.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_translate() {
+        let mut client = OpenAIClient::<Audio>::new();
+        let translate = client
+            .translate("examples/samples/colours-german.mp3")
+            .await;
+        assert!(translate.is_ok());
     }
 }
