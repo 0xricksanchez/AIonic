@@ -3,7 +3,7 @@ use serde::Deserialize;
 // COMMON STRUCT DEFINITIONS
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
-/// Represents the response from an API call to OpenAI when
+/// Represents the response from an API call to `OpenAI` when
 /// checking a specific model by name
 #[derive(Debug, Deserialize, Clone)]
 pub struct Model {

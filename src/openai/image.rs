@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-/// Enum representing the format in which the response from OpenAI's Image API can be received.
+/// Enum representing the format in which the response from `OpenAI`'s Image API can be received.
 ///
-/// This can either be a URL (Url) pointing to the generated image, or a Base64-encoded JSON string (Base64Json)
+/// This can either be a URL (`Url`) pointing to the generated image, or a Base64-encoded JSON string (`Base64Json`)
 /// that represents the image.
 pub enum ResponseDataType {
     Url,
@@ -48,7 +48,7 @@ impl Size {
     }
 }
 
-/// Represents the response from an Image API call to OpenAI.
+/// Represents the response from an Image API call to `OpenAI`.
 ///
 /// Contains fields that provide information about the creation time and the data associated with the generated image.
 #[derive(Deserialize, Debug)]
@@ -56,14 +56,14 @@ pub struct Response {
     /// UNIX timestamp indicating when the image was created.
     pub created: u64,
 
-    /// A vector of ImageData objects, each representing a generated image.
-    pub data: Vec<ImageData>,
+    /// A vector of `Data` objects, each representing a generated image.
+    pub data: Vec<Data>,
 }
 
 /// Represents the data associated with a single generated image in an Image API response.
-/// Only ever one of the fields is present in a single ImageData object.
+/// Only ever one of the fields is present in a single `Data` object.
 #[derive(Deserialize, Debug)]
-pub struct ImageData {
+pub struct Data {
     /// The URL of the generated image. This field is present when the response format is set to Url.
     pub url: Option<String>,
 
@@ -77,7 +77,7 @@ impl ToString for Size {
     }
 }
 
-/// Represents an Image object in the OpenAI Image API.
+/// Represents an Image object in the `OpenAI` Image API.
 ///
 /// This struct includes fields like `prompt`, `n`, `size`, `response_format`, `user`, `image`, and `mask`.
 /// Each of these fields can be set according to the requirements of the Image API request.
@@ -102,7 +102,7 @@ pub struct Image {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<String>,
 
-    /// A unique identifier representing your end-user, which can help OpenAI to monitor and detect abuse
+    /// A unique identifier representing your end-user, which can help `OpenAI` to monitor and detect abuse
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
 
