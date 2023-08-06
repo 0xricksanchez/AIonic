@@ -4,9 +4,8 @@ pub mod embeddings;
 pub mod image;
 mod misc;
 
-pub use audio::Audio;
+pub use audio::{Audio, Response as AudioResponse, ResponseFormat as AudioResponseFormat};
 
-use audio::{Response as AudioResponse, ResponseFormat as AudioResponseFormat};
 pub use chat::{Chat, Message, MessageRole};
 use chat::{Response, StreamedReponse};
 pub use embeddings::{Embedding, InputType, Response as EmbeddingResponse};
@@ -23,6 +22,7 @@ use rustyline::DefaultEditor;
 use serde::Serialize;
 use std::env;
 use std::error::Error;
+use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::exit;
@@ -948,6 +948,20 @@ impl OpenAI<Chat> {
 impl OpenAI<Embedding> {
     const OPENAI_API_EMBEDDINGS_URL: &str = "https://api.openai.com/v1/embeddings";
 
+    /// Sets the model of the AI assistant.
+    ///
+    /// # Arguments
+    ///
+    /// * `model`: A string that specifies the model name to be used by the AI assistant.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified model.
+    pub fn set_model<S: Into<String>>(mut self, model: S) -> Self {
+        self.config.model = model.into();
+        self
+    }
+
     /// Sends a POST request to the `OpenAI` API to get embeddings for the given prompt.
     ///
     /// This method accepts a prompt of type `S` which can be converted into `InputType`
@@ -1018,41 +1032,91 @@ impl OpenAI<Audio> {
     const OPENAI_API_TRANSCRIPTION_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
     const OPENAI_API_TRANSLATION_URL: &str = "https://api.openai.com/v1/audio/translations";
 
+    /// Sets the model of the AI assistant.
+    ///
+    /// # Arguments
+    ///
+    /// * `model`: A string that specifies the model name to be used by the AI assistant.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified model.
+    pub fn set_model<S: Into<String>>(mut self, model: S) -> Self {
+        self.config.model = model.into();
+        self
+    }
+
+    /// Sets the optional prompt to giode the model's style of response.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt`: An optional string that specifies the prompt to guide the model's style of response.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified prompt
+    pub fn set_prompt<S: Into<String>>(mut self, prompt: S) -> Self {
+        self.config.prompt = Some(prompt.into());
+        self
+    }
+
+    /// Sets the required audio file to be transcribed or translated.
+    ///
+    /// # Arguments
+    ///
+    /// * `file`: A string that specifies the path to the audio file to be transcribed or translated.
+    /// The path must be a valid path to a file.
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified audio file.
+    fn _set_file<P: AsRef<Path> + Send + Sync>(
+        &mut self,
+        file: P,
+    ) -> Result<&mut Self, Box<dyn std::error::Error + Send + Sync>> {
+        let path = file.as_ref();
+        if fs::metadata(path)?.is_file() {
+            let path_str = path.to_str().ok_or("Path is not valid UTF-8")?;
+            self.config.file = path_str.to_string();
+            if self._is_valid_mime_time().is_err() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "Invalid audio file type. Supported types are {:?}",
+                        Audio::get_supported_file_types()
+                    ),
+                )));
+            }
+            Ok(self)
+        } else {
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Path is not a file",
+            )))
+        }
+    }
+
+    /// Sets the optional audio file format to be returned
+    ///
+    /// # Arguments
+    ///
+    /// * `format`: An optional enum type that specifies the audio file format to be returned.
+    /// The default is `AudioResponseFormat::Json`..
+    ///
+    /// # Returns
+    ///
+    /// This function returns the instance of the AI assistant with the specified audio file format.
+    pub fn set_response_format(&mut self, format: AudioResponseFormat) -> &mut Self {
+        self.config.response_format = Some(format);
+        self
+    }
+
     fn _is_valid_mime_time(&mut self) -> Result<bool, String> {
         Audio::is_file_type_supported(&self.config.file)
     }
 
     fn _is_valid_model(&mut self) -> bool {
         self.config.model == "whisper-1"
-    }
-
-    fn _is_file_valid<P: AsRef<Path>>(
-        &mut self,
-        audio_file: P,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if !audio_file.as_ref().exists() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Audio file not found: {}", audio_file.as_ref().display()),
-            )));
-        }
-        let Some(audio_file_str) = audio_file.as_ref().to_str() else {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "Invalid audio file path",
-            )));
-        };
-        self.config.file = audio_file_str.to_string();
-        if self._is_valid_mime_time().is_err() {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "Invalid audio file type. Supported types are {:?}",
-                    Audio::get_supported_file_types()
-                ),
-            )));
-        }
-        Ok(())
     }
 
     fn _sanity_checks(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1108,11 +1172,16 @@ impl OpenAI<Audio> {
         Ok(form)
     }
 
-    pub async fn transcribe<P: AsRef<Path> + Send>(
+    /// Transcribes the audio file specified in the instance of the AI assistant.
+    ///
+    /// # Arguments
+    ///
+    /// * `audio_file`:
+    pub async fn transcribe<P: AsRef<Path> + Sync + Send>(
         &mut self,
         audio_file: P,
     ) -> Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>> {
-        self._is_file_valid(audio_file)?;
+        self._set_file(audio_file)?;
         self._sanity_checks()?;
         let mut form = self._form_builder().await?;
 
@@ -1128,11 +1197,11 @@ impl OpenAI<Audio> {
         Ok(transcription)
     }
 
-    pub async fn translate<P: AsRef<Path> + Send>(
+    pub async fn translate<P: AsRef<Path> + Send + Sync>(
         &mut self,
         audio_file: P,
     ) -> Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>> {
-        self._is_file_valid(audio_file)?;
+        self._set_file(audio_file)?;
         self._sanity_checks()?;
         if self.config.language.is_some() {
             self.config.language = None;

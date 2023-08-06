@@ -8,7 +8,7 @@ pub struct Response {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
-pub enum FileType {
+enum FileType {
     Mp3,
     Mp4,
     Mpeg,
