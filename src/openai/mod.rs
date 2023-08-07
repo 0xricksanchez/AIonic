@@ -1,6 +1,7 @@
 pub mod audio;
 pub mod chat;
 pub mod embeddings;
+pub mod files;
 pub mod image;
 mod misc;
 
@@ -9,10 +10,13 @@ pub use audio::{Audio, Response as AudioResponse, ResponseFormat as AudioRespons
 pub use chat::{Chat, Message, MessageRole};
 use chat::{Response, StreamedReponse};
 pub use embeddings::{Embedding, InputType, Response as EmbeddingResponse};
+pub use files::Files;
+use files::{Data as FileData, DeleteResponse, PromptCompletion, Response as FileResponse};
 use image::Size;
 pub use image::{Image, Response as ImageResponse, ResponseDataType};
 use misc::ModelsResponse;
-pub use misc::{Model, Usage};
+pub use misc::{Model, OpenAIError, Usage};
+
 use reqwest::multipart::{Form, Part};
 use reqwest::{Body, Client, IntoUrl};
 use tokio_util::codec::{BytesCodec, FramedRead};
@@ -89,6 +93,16 @@ impl OpenAIConfig for Audio {
             response_format: Some(AudioResponseFormat::get_default_response_format()),
             temperature: Some(0.0),
             language: None,
+        }
+    }
+}
+
+impl OpenAIConfig for Files {
+    fn default() -> Self {
+        Self {
+            file: None,
+            purpose: None,
+            file_id: None,
         }
     }
 }
@@ -179,6 +193,19 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAI<C> {
             .header("Content-Type", "application/json")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .json(&self.config)
+            .send()
+            .await?;
+        Ok(res)
+    }
+
+    async fn _make_delete_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+    ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
+        let res = self
+            .client
+            .delete(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
             .send()
             .await?;
         Ok(res)
@@ -392,207 +419,32 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAI<C> {
         let body = Body::wrap_stream(stream);
         Ok(body)
     }
-}
 
-// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-// = OpenAI IMAGE IMPLEMENTATION
-// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-
-impl OpenAI<Image> {
-    const OPENAI_API_IMAGE_GEN_URL: &str = "https://api.openai.com/v1/images/generations";
-    const OPENAI_API_IMAGE_EDIT_URL: &str = "https://api.openai.com/v1/images/edits";
-    const OPENAI_API_IMAGE_VARIATION_URL: &str = "https://api.openai.com/v1/images/variations";
-
-    /// Allows setting the return format of the response. `ResponseDataType` is an enum with the
-    /// following variants:
-    /// * `Url`: The response will be a vector of URLs to the generated images.
-    /// * `Base64Json`: The response will be a vector of base64 encoded images.
-    pub fn set_response_format(mut self, response_format: &ResponseDataType) -> Self {
-        self.config.response_format = Some(response_format.to_string());
-        self
-    }
-
-    /// Allows setting the number of images to be generated.
-    pub fn set_max_images(mut self, number_of_images: u64) -> Self {
-        self.config.n = Some(number_of_images);
-        self
-    }
-
-    /// Allows setting the dimensions of the generated images.
-    pub fn set_size(mut self, size: &Size) -> Self {
-        self.config.size = Some(size.to_string());
-        self
-    }
-
-    /// Generates an image based on a textual description.
-    ///
-    /// This function sets the prompt to the given string and sends a request to the `OpenAI` API to create an image.
-    /// The function then parses the response and returns a vector of image URLs.
+    /// A helper function to handle potential errors from OpenAI API responses.
     ///
     /// # Arguments
     ///
-    /// * `prompt`: A string that describes the image to be generated.
+    /// * `res` - A `Response` object from the OpenAI API call.
     ///
     /// # Returns
     ///
-    /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
-    /// If there's an error, it returns a dynamic error.
-    pub async fn create<S: Into<String> + Send>(
+    /// `Result<Response, Box<dyn std::error::Error + Send + Sync>>`:
+    /// Returns the original `Response` object if the status code indicates success.
+    /// If the status code indicates an error, it will attempt to deserialize the response
+    /// into an `OpenAIError` and returns a `std::io::Error` constructed from the error message.
+    pub async fn handle_api_errors(
         &mut self,
-        prompt: S,
-    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
-        self.config.prompt = Some(prompt.into());
-        if self.config.image.is_some() {
-            self.config.image = None;
+        res: reqwest::Response,
+    ) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
+        if res.status().is_success() {
+            Ok(res)
+        } else {
+            let err_resp: OpenAIError = res.json().await?;
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                err_resp.error.message,
+            )))
         }
-        if self.config.mask.is_some() {
-            self.config.mask = None;
-        }
-        let image_response: ImageResponse = self
-            ._make_post_request(Self::OPENAI_API_IMAGE_GEN_URL)
-            .await?
-            .json()
-            .await?;
-
-        Ok(self._parse_response(&image_response))
-    }
-
-    /// Modifies an existing image based on a textual description.
-    ///
-    /// This function sets the image and optionally the mask, then sets the prompt to the given string and sends a request to the `OpenAI` API to modify the image.
-    /// The function then parses the response and returns a vector of image URLs.
-    ///
-    /// # Arguments
-    ///
-    /// * `prompt`: A string that describes the modifications to be made to the image.
-    /// * `image_file_path`: A string that specifies the path to the image file to be modified.
-    /// * `mask`: An optional string that specifies the path to a mask file. If the mask is not provided, it is set to `None`.
-    ///
-    /// # Returns
-    ///
-    /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
-    /// If there's an error, it returns a dynamic error.
-    pub async fn edit<S: Into<String> + Send>(
-        &mut self,
-        prompt: S,
-        image_file_path: S,
-        mask: Option<S>,
-    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
-        self.config.image = Some(image_file_path.into());
-        if let Some(mask) = mask {
-            self.config.mask = Some(mask.into());
-        }
-        self.config.prompt = Some(prompt.into());
-
-        if let Some(n) = self.config.n {
-            // TODO: Add a warning here
-            if !image::Image::is_valid_n(n) {
-                self.config.n = Some(image::Image::get_default_n());
-            }
-        }
-
-        if let Some(size) = self.config.size.as_ref() {
-            // TODO: Add a warning here
-            if !image::Image::is_valid_size(size) {
-                self.config.size = Some(image::Image::get_default_size().into());
-            }
-        }
-
-        if let Some(response_format) = self.config.response_format.as_ref() {
-            // TODO: Add a warning here
-            if !image::Image::is_valid_response_format(response_format) {
-                self.config.response_format =
-                    Some(image::Image::get_default_response_format().into());
-            }
-        }
-
-        let image_response: ImageResponse = self
-            ._make_file_upload_request(Self::OPENAI_API_IMAGE_EDIT_URL)
-            .await?;
-        Ok(self._parse_response(&image_response))
-    }
-
-    /// Generates variations of an existing image.
-    ///
-    /// This function sets the image and sends a request to the `OpenAI` API to create variations of the image.
-    /// The function then parses the response and returns a vector of image URLs.
-    ///
-    /// # Arguments
-    ///
-    /// * `image_file_path`: A string that specifies the path to the image file.
-    ///
-    /// # Returns
-    ///
-    /// This function returns a `Result` with a vector of strings on success, each string being a URL to a new variation of the image.
-    /// If there's an error, it returns a dynamic error.
-    pub async fn variation<S: Into<String> + Send>(
-        &mut self,
-        image_file_path: S,
-    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
-        self.config.image = Some(image_file_path.into());
-        if self.config.prompt.is_some() {
-            self.config.prompt = None;
-        }
-        if self.config.mask.is_some() {
-            self.config.mask = None;
-        }
-        let image_response: ImageResponse = self
-            ._make_file_upload_request(Self::OPENAI_API_IMAGE_VARIATION_URL)
-            .await?;
-
-        Ok(self._parse_response(&image_response))
-    }
-
-    fn _parse_response(&mut self, image_response: &ImageResponse) -> Vec<String> {
-        image_response
-            .data
-            .iter()
-            .filter_map(|d| {
-                if self.config.response_format == Some("url".into()) {
-                    d.url.clone()
-                } else {
-                    d.b64_json.clone()
-                }
-            })
-            .collect::<Vec<String>>()
-    }
-
-    async fn _make_file_upload_request<S: IntoUrl + Send + Sync>(
-        &mut self,
-        url: S,
-    ) -> Result<ImageResponse, Box<dyn Error + Send + Sync>> {
-        let file_name = self.config.image.as_ref().unwrap();
-        let file_part_stream = self.create_file_upload_part(file_name.to_string()).await?;
-        let mut form = Form::new().part("image", file_part_stream);
-
-        if let Some(prompt) = self.config.prompt.as_ref() {
-            form = form.text("prompt", prompt.clone());
-        }
-        if let Some(mask_name) = self.config.mask.as_ref() {
-            let mask_part_stream = self.create_file_upload_part(mask_name.to_string()).await?;
-            form = form.part("mask", mask_part_stream);
-        }
-
-        if let Some(response_format) = self.config.response_format.as_ref() {
-            form = form.text("response_format", response_format.clone());
-        }
-
-        if let Some(size) = self.config.size.as_ref() {
-            form = form.text("size", size.clone());
-        }
-
-        if let Some(n) = self.config.n {
-            form = form.text("n", n.to_string());
-        }
-
-        if let Some(user) = self.config.user.as_ref() {
-            form = form.text("user", user.clone());
-        }
-
-        let image_response: ImageResponse =
-            self._make_form_request(url, form).await?.json().await?;
-
-        Ok(image_response)
     }
 }
 
@@ -942,6 +794,209 @@ impl OpenAI<Chat> {
 }
 
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAI IMAGE IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+impl OpenAI<Image> {
+    const OPENAI_API_IMAGE_GEN_URL: &str = "https://api.openai.com/v1/images/generations";
+    const OPENAI_API_IMAGE_EDIT_URL: &str = "https://api.openai.com/v1/images/edits";
+    const OPENAI_API_IMAGE_VARIATION_URL: &str = "https://api.openai.com/v1/images/variations";
+
+    /// Allows setting the return format of the response. `ResponseDataType` is an enum with the
+    /// following variants:
+    /// * `Url`: The response will be a vector of URLs to the generated images.
+    /// * `Base64Json`: The response will be a vector of base64 encoded images.
+    pub fn set_response_format(mut self, response_format: &ResponseDataType) -> Self {
+        self.config.response_format = Some(response_format.to_string());
+        self
+    }
+
+    /// Allows setting the number of images to be generated.
+    pub fn set_max_images(mut self, number_of_images: u64) -> Self {
+        self.config.n = Some(number_of_images);
+        self
+    }
+
+    /// Allows setting the dimensions of the generated images.
+    pub fn set_size(mut self, size: &Size) -> Self {
+        self.config.size = Some(size.to_string());
+        self
+    }
+
+    /// Generates an image based on a textual description.
+    ///
+    /// This function sets the prompt to the given string and sends a request to the `OpenAI` API to create an image.
+    /// The function then parses the response and returns a vector of image URLs.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt`: A string that describes the image to be generated.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
+    /// If there's an error, it returns a dynamic error.
+    pub async fn create<S: Into<String> + Send>(
+        &mut self,
+        prompt: S,
+    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
+        self.config.prompt = Some(prompt.into());
+        if self.config.image.is_some() {
+            self.config.image = None;
+        }
+        if self.config.mask.is_some() {
+            self.config.mask = None;
+        }
+        let res: reqwest::Response = self
+            ._make_post_request(Self::OPENAI_API_IMAGE_GEN_URL)
+            .await?;
+        let handle_res = self.handle_api_errors(res).await?;
+        let image_response: ImageResponse = handle_res.json().await?;
+
+        Ok(self._parse_response(&image_response))
+    }
+
+    /// Modifies an existing image based on a textual description.
+    ///
+    /// This function sets the image and optionally the mask, then sets the prompt to the given string and sends a request to the `OpenAI` API to modify the image.
+    /// The function then parses the response and returns a vector of image URLs.
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt`: A string that describes the modifications to be made to the image.
+    /// * `image_file_path`: A string that specifies the path to the image file to be modified.
+    /// * `mask`: An optional string that specifies the path to a mask file. If the mask is not provided, it is set to `None`.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `Result` with a vector of strings on success, each string being a URL to an image.
+    /// If there's an error, it returns a dynamic error.
+    pub async fn edit<S: Into<String> + Send>(
+        &mut self,
+        prompt: S,
+        image_file_path: S,
+        mask: Option<S>,
+    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
+        self.config.image = Some(image_file_path.into());
+        if let Some(mask) = mask {
+            self.config.mask = Some(mask.into());
+        }
+        self.config.prompt = Some(prompt.into());
+
+        if let Some(n) = self.config.n {
+            // TODO: Add a warning here
+            if !image::Image::is_valid_n(n) {
+                self.config.n = Some(image::Image::get_default_n());
+            }
+        }
+
+        if let Some(size) = self.config.size.as_ref() {
+            // TODO: Add a warning here
+            if !image::Image::is_valid_size(size) {
+                self.config.size = Some(image::Image::get_default_size().into());
+            }
+        }
+
+        if let Some(response_format) = self.config.response_format.as_ref() {
+            // TODO: Add a warning here
+            if !image::Image::is_valid_response_format(response_format) {
+                self.config.response_format =
+                    Some(image::Image::get_default_response_format().into());
+            }
+        }
+
+        let image_response: ImageResponse = self
+            ._make_file_upload_request(Self::OPENAI_API_IMAGE_EDIT_URL)
+            .await?;
+        Ok(self._parse_response(&image_response))
+    }
+
+    /// Generates variations of an existing image.
+    ///
+    /// This function sets the image and sends a request to the `OpenAI` API to create variations of the image.
+    /// The function then parses the response and returns a vector of image URLs.
+    ///
+    /// # Arguments
+    ///
+    /// * `image_file_path`: A string that specifies the path to the image file.
+    ///
+    /// # Returns
+    ///
+    /// This function returns a `Result` with a vector of strings on success, each string being a URL to a new variation of the image.
+    /// If there's an error, it returns a dynamic error.
+    pub async fn variation<S: Into<String> + Send>(
+        &mut self,
+        image_file_path: S,
+    ) -> Result<Vec<String>, Box<dyn Error + Send + Sync>> {
+        self.config.image = Some(image_file_path.into());
+        if self.config.prompt.is_some() {
+            self.config.prompt = None;
+        }
+        if self.config.mask.is_some() {
+            self.config.mask = None;
+        }
+        let image_response: ImageResponse = self
+            ._make_file_upload_request(Self::OPENAI_API_IMAGE_VARIATION_URL)
+            .await?;
+
+        Ok(self._parse_response(&image_response))
+    }
+
+    fn _parse_response(&mut self, image_response: &ImageResponse) -> Vec<String> {
+        image_response
+            .data
+            .iter()
+            .filter_map(|d| {
+                if self.config.response_format == Some("url".into()) {
+                    d.url.clone()
+                } else {
+                    d.b64_json.clone()
+                }
+            })
+            .collect::<Vec<String>>()
+    }
+
+    async fn _make_file_upload_request<S: IntoUrl + Send + Sync>(
+        &mut self,
+        url: S,
+    ) -> Result<ImageResponse, Box<dyn Error + Send + Sync>> {
+        let file_name = self.config.image.as_ref().unwrap();
+        let file_part_stream = self.create_file_upload_part(file_name.to_string()).await?;
+        let mut form = Form::new().part("image", file_part_stream);
+
+        if let Some(prompt) = self.config.prompt.as_ref() {
+            form = form.text("prompt", prompt.clone());
+        }
+        if let Some(mask_name) = self.config.mask.as_ref() {
+            let mask_part_stream = self.create_file_upload_part(mask_name.to_string()).await?;
+            form = form.part("mask", mask_part_stream);
+        }
+
+        if let Some(response_format) = self.config.response_format.as_ref() {
+            form = form.text("response_format", response_format.clone());
+        }
+
+        if let Some(size) = self.config.size.as_ref() {
+            form = form.text("size", size.clone());
+        }
+
+        if let Some(n) = self.config.n {
+            form = form.text("n", n.to_string());
+        }
+
+        if let Some(user) = self.config.user.as_ref() {
+            form = form.text("user", user.clone());
+        }
+
+        let res: reqwest::Response = self._make_form_request(url, form).await?;
+        let handle_res = self.handle_api_errors(res).await?;
+        let image_response: ImageResponse = handle_res.json().await?;
+
+        Ok(image_response)
+    }
+}
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // = OpenAI EMBEDDINGS IMPLEMENTATION
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
@@ -1016,10 +1071,11 @@ impl OpenAI<Embedding> {
         prompt: S,
     ) -> Result<EmbeddingResponse, Box<dyn std::error::Error + Send + Sync>> {
         self.config.input = prompt.into();
-        let r = self
+        let res: reqwest::Response = self
             ._make_post_request(Self::OPENAI_API_EMBEDDINGS_URL)
             .await?;
-        let embedding = r.json::<EmbeddingResponse>().await?;
+        let handled_res = self.handle_api_errors(res).await?;
+        let embedding: EmbeddingResponse = handled_res.json().await?;
         Ok(embedding)
     }
 }
@@ -1091,7 +1147,7 @@ impl OpenAI<Audio> {
         } else {
             Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Path is not a file",
+                format!("Path is not a file: {}", path.display()),
             )))
         }
     }
@@ -1172,11 +1228,17 @@ impl OpenAI<Audio> {
         Ok(form)
     }
 
-    /// Transcribes the audio file specified in the instance of the AI assistant.
+    /// Transcribe an audio file.
     ///
     /// # Arguments
     ///
-    /// * `audio_file`:
+    /// * `audio_file` - The path to the audio file to transcribe.
+    ///
+    /// # Returns
+    ///
+    /// `Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// An `AudioResponse` object representing the transcription of the audio file,
+    /// or an error if the request fails.
     pub async fn transcribe<P: AsRef<Path> + Sync + Send>(
         &mut self,
         audio_file: P,
@@ -1189,14 +1251,27 @@ impl OpenAI<Audio> {
             form = form.text("language", lang);
         }
 
-        let transcription: AudioResponse = self
+        let res: reqwest::Response = self
             ._make_form_request(Self::OPENAI_API_TRANSCRIPTION_URL, form)
-            .await?
-            .json()
             .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let transcription: AudioResponse = handled_res.json().await?;
         Ok(transcription)
     }
 
+    /// Translate an audio file. Currently only supports translating
+    /// to English.
+    ///
+    /// # Arguments
+    ///
+    /// * `audio_file` - The path to the audio file to translate.
+    ///
+    /// # Returns
+    ///
+    /// `Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// An `AudioResponse` object representing the translation of the audio file,
+    /// or an error if the request fails.
     pub async fn translate<P: AsRef<Path> + Send + Sync>(
         &mut self,
         audio_file: P,
@@ -1207,12 +1282,163 @@ impl OpenAI<Audio> {
             self.config.language = None;
         }
         let form = self._form_builder().await?;
-        let translation: AudioResponse = self
+        let res: reqwest::Response = self
             ._make_form_request(Self::OPENAI_API_TRANSLATION_URL, form)
-            .await?
-            .json()
             .await?;
+        let handled_res = self.handle_api_errors(res).await?;
+        let translation: AudioResponse = handled_res.json().await?;
         Ok(translation)
+    }
+}
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAI FILES IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+impl OpenAI<Files> {
+    const OPENAI_API_LIST_FILES_URL: &str = "https://api.openai.com/v1/files";
+
+    /// List all files that have been uploaded.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileResponse` object representing all uploaded files,
+    /// or an error if the request fails.
+    pub async fn list(&mut self) -> Result<FileResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let res: reqwest::Response = self
+            ._make_get_request(Self::OPENAI_API_LIST_FILES_URL)
+            .await?;
+        let handled_res = self.handle_api_errors(res).await?;
+        let files: FileResponse = handled_res.json().await?;
+        Ok(files)
+    }
+
+    /// Retrieve the details of a specific file.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileData` object representing the file's details,
+    /// or an error if the request fails.
+    pub async fn retrieve<S: Into<String> + std::fmt::Display>(
+        &mut self,
+        file_id: S,
+    ) -> Result<FileData, Box<dyn std::error::Error + Send + Sync>> {
+        let res: reqwest::Response = self
+            ._make_get_request(format!("{}/{}", Self::OPENAI_API_LIST_FILES_URL, file_id))
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let file: FileData = handled_res.json().await?;
+        Ok(file)
+    }
+
+    /// Retrieve the content of a specific file.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileData` object representing the file's content,
+    /// or an error if the request fails.
+    pub async fn retrieve_content<S: Into<String> + std::fmt::Display>(
+        &mut self,
+        file_id: S,
+    ) -> Result<Vec<PromptCompletion>, Box<dyn std::error::Error + Send + Sync>> {
+        let res = self
+            ._make_get_request(format!(
+                "{}/{}/content",
+                Self::OPENAI_API_LIST_FILES_URL,
+                file_id
+            ))
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let files: Vec<PromptCompletion> = handled_res
+            .text()
+            .await?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<Vec<PromptCompletion>, _>>()?;
+        Ok(files)
+    }
+
+    /// Upload a file to the OpenAI API.
+    ///
+    /// # Arguments
+    ///
+    /// * `file` - The path to the file to upload.
+    /// * `purpose` - The purpose of the upload (e.g., 'answers', 'questions').
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileData` object representing the uploaded file's details,
+    /// or an error if the request fails.
+    pub async fn upload<P: AsRef<Path> + Send + Sync>(
+        &mut self,
+        file: P,
+    ) -> Result<FileData, Box<dyn std::error::Error + Send + Sync>> {
+        self.config.purpose = Some("fine-tune".into());
+        let path = file.as_ref();
+        if fs::metadata(path)?.is_file() {
+            let path_str = path.to_str().ok_or("Path is not valid UTF-8")?;
+            if !path_str.ends_with(".jsonl") {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("File must be a .jsonl file: {}", path.display()),
+                )));
+            }
+            self.config.file = Some(path_str.to_string());
+        } else {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Path is not a file: {}", path.display()),
+            )));
+        }
+
+        let file_part_stream = self.create_file_upload_part(file).await?;
+        let mut form = Form::new().part("file", file_part_stream);
+        form = form.text("purpose", self.config.purpose.clone().unwrap());
+        let res: reqwest::Response = self
+            ._make_form_request(Self::OPENAI_API_LIST_FILES_URL, form)
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let file_data: FileData = handled_res.json().await?;
+        Ok(file_data)
+    }
+
+    /// Delete a specific file.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `DeleteResponse` object representing the response from the delete request,
+    /// or an error if the request fails.
+    pub async fn delete<S: Into<String> + std::fmt::Display>(
+        &mut self,
+        file_id: S,
+    ) -> Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let res: reqwest::Response = self
+            ._make_delete_request(format!("{}/{}", Self::OPENAI_API_LIST_FILES_URL, file_id))
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let del_resp: DeleteResponse = handled_res.json().await?;
+        Ok(del_resp)
     }
 }
 
@@ -1324,5 +1550,70 @@ mod tests {
             .translate("examples/samples/colours-german.mp3")
             .await;
         assert!(translate.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_list_files() {
+        let files = OpenAI::<Files>::new().list().await;
+        assert!(files.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_delete_non_existing_file() {
+        let files = OpenAI::<Files>::new().delete("invalid_file_id").await;
+        assert!(files.is_err());
+        assert_eq!(
+            files.unwrap_err().to_string(),
+            "No such File object: invalid_file_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upload_non_existing_file() {
+        let files = OpenAI::<Files>::new().upload("invalid_file").await;
+        assert!(files.is_err());
+        assert_eq!(
+            files.unwrap_err().to_string(),
+            "No such file or directory (os error 2)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_ops() {
+        let test_file = "examples/samples/test.jsonl";
+        let mut client = OpenAI::<Files>::new();
+
+        // Upload file
+        let fup = client.upload(test_file).await;
+        assert!(fup.is_ok());
+        let file_id = fup.unwrap().id;
+        println!("{}", file_id);
+
+        // Check if file exists online
+        let files = client.list().await;
+        assert!(files.is_ok());
+        assert!(!files.unwrap().data.is_empty());
+
+        // Fetch file metadata
+        let file = client.retrieve(&file_id).await;
+        assert!(file.is_ok());
+        assert_eq!(file.unwrap().id, file_id);
+
+        // Fetch file contents
+        let contents = client.retrieve_content(&file_id).await;
+        assert!(contents.is_ok());
+        assert_eq!(contents.unwrap().len(), 3);
+
+        // Delete file
+        // Wait for file to be uploaded for 5 seconds
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        let fdel = client.delete(&file_id).await;
+        assert!(fdel.is_ok());
+        assert_eq!(fdel.unwrap().id, file_id);
+
+        // Verify no files exist anymore
+        let files = client.list().await;
+        assert!(files.is_ok());
+        assert!(files.unwrap().data.is_empty());
     }
 }

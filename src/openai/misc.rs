@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // COMMON STRUCT DEFINITIONS
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -37,4 +37,36 @@ pub struct Usage {
 
     /// Total number of tokens used in the API call.
     pub total_tokens: u64,
+}
+
+/// Represents an error returned from the OpenAI API.
+///
+/// This struct is used to deserialize the JSON object that the OpenAI API
+/// returns when a request fails. The API's error object has a fixed structure,
+/// so this struct can directly map to it.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OpenAIError {
+    /// Contains specific details about the error.
+    pub error: ErrorDetails,
+}
+
+/// Contains detailed information about an error from the OpenAI API.
+///
+/// The fields in this struct correspond to the properties in the error object
+/// returned by the OpenAI API. They provide detailed information about what
+/// went wrong with a request, which can be useful for debugging and error handling.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ErrorDetails {
+    /// A human-readable message providing more details about the error.
+    pub message: String,
+
+    /// The type of error returned. This can be used to categorize errors.
+    pub r#type: String,
+
+    /// (Optional) The specific parameter in the request that caused the error.
+    pub param: Option<String>,
+
+    /// (Optional) A code corresponding to the error. If provided, this can be
+    /// used to handle specific error types programmatically.
+    pub code: Option<String>,
 }

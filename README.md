@@ -34,6 +34,25 @@ The `examples/` folder houses a non exhaustive amount of API showcase examples.
 They can be tested by running `cargo run --example <name>` from the root
 directory of this project.
 
+## Status
+
+The library is currently in very active development.
+We covered the following aspects:
+
+* openAI:
+  * [x] Chat
+  * [x] Images
+  * [x] Embeddings
+  * [x] Audio
+  * [x] Files
+  * [ ] Fine-tunes
+  * [ ] Moderations
+  * [ ] Edits
+* Bard/PaLM2:
+  * [ ] TODO
+* LLaMA:
+  * [ ] TODO
+
 ## Contributing
 
 Contributions are welcome. Please open an issue to discuss your ideas before
