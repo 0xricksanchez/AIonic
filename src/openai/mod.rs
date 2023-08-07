@@ -11,7 +11,7 @@ pub use chat::{Chat, Message, MessageRole};
 use chat::{Response, StreamedReponse};
 pub use embeddings::{Embedding, InputType, Response as EmbeddingResponse};
 pub use files::Files;
-use files::{Data as FileData, DeleteResponse, Response as FileResponse};
+use files::{Data as FileData, DeleteResponse, PromptCompletion, Response as FileResponse};
 use image::Size;
 pub use image::{Image, Response as ImageResponse, ResponseDataType};
 use misc::ModelsResponse;
@@ -1199,11 +1199,17 @@ impl OpenAI<Audio> {
         Ok(form)
     }
 
-    /// Transcribes the audio file specified in the instance of the AI assistant.
+    /// Transcribe an audio file.
     ///
     /// # Arguments
     ///
-    /// * `audio_file`:
+    /// * `audio_file` - The path to the audio file to transcribe.
+    ///
+    /// # Returns
+    ///
+    /// `Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// An `AudioResponse` object representing the transcription of the audio file,
+    /// or an error if the request fails.
     pub async fn transcribe<P: AsRef<Path> + Sync + Send>(
         &mut self,
         audio_file: P,
@@ -1224,6 +1230,18 @@ impl OpenAI<Audio> {
         Ok(transcription)
     }
 
+    /// Translate an audio file. Currently only supports translating
+    /// to English.
+    ///
+    /// # Arguments
+    ///
+    /// * `audio_file` - The path to the audio file to translate.
+    ///
+    /// # Returns
+    ///
+    /// `Result<AudioResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// An `AudioResponse` object representing the translation of the audio file,
+    /// or an error if the request fails.
     pub async fn translate<P: AsRef<Path> + Send + Sync>(
         &mut self,
         audio_file: P,
@@ -1250,6 +1268,13 @@ impl OpenAI<Audio> {
 impl OpenAI<Files> {
     const OPENAI_API_LIST_FILES_URL: &str = "https://api.openai.com/v1/files";
 
+    /// List all files that have been uploaded.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileResponse` object representing all uploaded files,
+    /// or an error if the request fails.
     pub async fn list(&mut self) -> Result<FileResponse, Box<dyn std::error::Error + Send + Sync>> {
         let files: FileResponse = self
             ._make_get_request(Self::OPENAI_API_LIST_FILES_URL)
@@ -1259,6 +1284,17 @@ impl OpenAI<Files> {
         Ok(files)
     }
 
+    /// Retrieve the details of a specific file.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileData` object representing the file's details,
+    /// or an error if the request fails.
     pub async fn retrieve<S: Into<String> + std::fmt::Display>(
         &mut self,
         file_id: S,
@@ -1271,12 +1307,54 @@ impl OpenAI<Files> {
         Ok(file)
     }
 
-    pub async fn upload<P: AsRef<Path> + Send + Sync, S: Into<String>>(
+    /// Retrieve the content of a specific file.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileData` object representing the file's content,
+    /// or an error if the request fails.
+    pub async fn retrieve_content<S: Into<String> + std::fmt::Display>(
+        &mut self,
+        file_id: S,
+    ) -> Result<Vec<PromptCompletion>, Box<dyn std::error::Error + Send + Sync>> {
+        let resp = self
+            ._make_get_request(format!(
+                "{}/{}/content",
+                Self::OPENAI_API_LIST_FILES_URL,
+                file_id
+            ))
+            .await?
+            .text()
+            .await?;
+        let files: Vec<PromptCompletion> = resp
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<Result<Vec<PromptCompletion>, _>>()?;
+        Ok(files)
+    }
+
+    /// Upload a file to the OpenAI API.
+    ///
+    /// # Arguments
+    ///
+    /// * `file` - The path to the file to upload.
+    /// * `purpose` - The purpose of the upload (e.g., 'answers', 'questions').
+    ///
+    /// # Returns
+    ///
+    /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FileData` object representing the uploaded file's details,
+    /// or an error if the request fails.
+    pub async fn upload<P: AsRef<Path> + Send + Sync>(
         &mut self,
         file: P,
-        purpose: S,
     ) -> Result<FileData, Box<dyn std::error::Error + Send + Sync>> {
-        self.config.purpose = Some(purpose.into());
+        self.config.purpose = Some("fine-tune".into());
         let path = file.as_ref();
         if fs::metadata(path)?.is_file() {
             let path_str = path.to_str().ok_or("Path is not valid UTF-8")?;
@@ -1295,7 +1373,8 @@ impl OpenAI<Files> {
         }
 
         let file_part_stream = self.create_file_upload_part(file).await?;
-        let form = Form::new().part("file", file_part_stream);
+        let mut form = Form::new().part("file", file_part_stream);
+        form = form.text("purpose", self.config.purpose.clone().unwrap());
         let file: FileData = self
             ._make_form_request(Self::OPENAI_API_LIST_FILES_URL, form)
             .await?
@@ -1304,17 +1383,27 @@ impl OpenAI<Files> {
         Ok(file)
     }
 
+    /// Delete a specific file.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `DeleteResponse` object representing the response from the delete request,
+    /// or an error if the request fails.
     pub async fn delete<S: Into<String> + std::fmt::Display>(
         &mut self,
         file_id: S,
     ) -> Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let resp: DeleteResponse = self
+        let del_resp: DeleteResponse = self
             ._make_delete_request(format!("{}/{}", Self::OPENAI_API_LIST_FILES_URL, file_id))
             .await?
             .json()
             .await?;
-
-        Ok(resp)
+        Ok(del_resp)
     }
 }
 
@@ -1432,7 +1521,45 @@ mod tests {
     async fn test_list_files() {
         let files = OpenAI::<Files>::new().list().await;
         assert!(files.is_ok());
-        println!("{:#?}", files.unwrap());
         assert_eq!(1, 0)
+    }
+
+    #[tokio::test]
+    async fn test_file_ops() {
+        let test_file = "examples/samples/test.jsonl";
+        let mut client = OpenAI::<Files>::new();
+
+        // Upload file
+        let fup = client.upload(test_file).await;
+        assert!(fup.is_ok());
+        let file_id = fup.unwrap().id;
+        println!("{}", file_id);
+
+        // Check if file exists online
+        let files = client.list().await;
+        assert!(files.is_ok());
+        assert!(!files.unwrap().data.is_empty());
+
+        // Fetch file metadata
+        let file = client.retrieve(&file_id).await;
+        assert!(file.is_ok());
+        assert_eq!(file.unwrap().id, file_id);
+
+        // Fetch file contents
+        let contents = client.retrieve_content(&file_id).await;
+        assert!(contents.is_ok());
+        assert_eq!(contents.unwrap().len(), 3);
+
+        // Delete file
+        // Wait for file to be uploaded for 5 seconds
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        let fdel = client.delete(&file_id).await;
+        assert!(fdel.is_ok());
+        assert_eq!(fdel.unwrap().id, file_id);
+
+        // Verify no files exist anymore
+        let files = client.list().await;
+        assert!(files.is_ok());
+        assert!(files.unwrap().data.is_empty());
     }
 }
