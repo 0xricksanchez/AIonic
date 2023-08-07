@@ -15,7 +15,7 @@ use files::{Data as FileData, DeleteResponse, PromptCompletion, Response as File
 use image::Size;
 pub use image::{Image, Response as ImageResponse, ResponseDataType};
 use misc::ModelsResponse;
-pub use misc::{Model, Usage};
+pub use misc::{Model, OpenAIError, Usage};
 
 use reqwest::multipart::{Form, Part};
 use reqwest::{Body, Client, IntoUrl};
@@ -419,6 +419,33 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAI<C> {
         let body = Body::wrap_stream(stream);
         Ok(body)
     }
+
+    /// A helper function to handle potential errors from OpenAI API responses.
+    ///
+    /// # Arguments
+    ///
+    /// * `res` - A `Response` object from the OpenAI API call.
+    ///
+    /// # Returns
+    ///
+    /// `Result<Response, Box<dyn std::error::Error + Send + Sync>>`:
+    /// Returns the original `Response` object if the status code indicates success.
+    /// If the status code indicates an error, it will attempt to deserialize the response
+    /// into an `OpenAIError` and returns a `std::io::Error` constructed from the error message.
+    pub async fn handle_api_errors(
+        &mut self,
+        res: reqwest::Response,
+    ) -> Result<reqwest::Response, Box<dyn std::error::Error + Send + Sync>> {
+        if res.status().is_success() {
+            Ok(res)
+        } else {
+            let err_resp: OpenAIError = res.json().await?;
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                err_resp.error.message,
+            )))
+        }
+    }
 }
 
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -820,11 +847,11 @@ impl OpenAI<Image> {
         if self.config.mask.is_some() {
             self.config.mask = None;
         }
-        let image_response: ImageResponse = self
+        let res: reqwest::Response = self
             ._make_post_request(Self::OPENAI_API_IMAGE_GEN_URL)
-            .await?
-            .json()
             .await?;
+        let handle_res = self.handle_api_errors(res).await?;
+        let image_response: ImageResponse = handle_res.json().await?;
 
         Ok(self._parse_response(&image_response))
     }
@@ -961,8 +988,9 @@ impl OpenAI<Image> {
             form = form.text("user", user.clone());
         }
 
-        let image_response: ImageResponse =
-            self._make_form_request(url, form).await?.json().await?;
+        let res: reqwest::Response = self._make_form_request(url, form).await?;
+        let handle_res = self.handle_api_errors(res).await?;
+        let image_response: ImageResponse = handle_res.json().await?;
 
         Ok(image_response)
     }
@@ -1043,10 +1071,11 @@ impl OpenAI<Embedding> {
         prompt: S,
     ) -> Result<EmbeddingResponse, Box<dyn std::error::Error + Send + Sync>> {
         self.config.input = prompt.into();
-        let r = self
+        let res: reqwest::Response = self
             ._make_post_request(Self::OPENAI_API_EMBEDDINGS_URL)
             .await?;
-        let embedding = r.json::<EmbeddingResponse>().await?;
+        let handled_res = self.handle_api_errors(res).await?;
+        let embedding: EmbeddingResponse = handled_res.json().await?;
         Ok(embedding)
     }
 }
@@ -1222,11 +1251,12 @@ impl OpenAI<Audio> {
             form = form.text("language", lang);
         }
 
-        let transcription: AudioResponse = self
+        let res: reqwest::Response = self
             ._make_form_request(Self::OPENAI_API_TRANSCRIPTION_URL, form)
-            .await?
-            .json()
             .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let transcription: AudioResponse = handled_res.json().await?;
         Ok(transcription)
     }
 
@@ -1252,11 +1282,11 @@ impl OpenAI<Audio> {
             self.config.language = None;
         }
         let form = self._form_builder().await?;
-        let translation: AudioResponse = self
+        let res: reqwest::Response = self
             ._make_form_request(Self::OPENAI_API_TRANSLATION_URL, form)
-            .await?
-            .json()
             .await?;
+        let handled_res = self.handle_api_errors(res).await?;
+        let translation: AudioResponse = handled_res.json().await?;
         Ok(translation)
     }
 }
@@ -1276,11 +1306,11 @@ impl OpenAI<Files> {
     /// A `FileResponse` object representing all uploaded files,
     /// or an error if the request fails.
     pub async fn list(&mut self) -> Result<FileResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let files: FileResponse = self
+        let res: reqwest::Response = self
             ._make_get_request(Self::OPENAI_API_LIST_FILES_URL)
-            .await?
-            .json()
             .await?;
+        let handled_res = self.handle_api_errors(res).await?;
+        let files: FileResponse = handled_res.json().await?;
         Ok(files)
     }
 
@@ -1299,11 +1329,12 @@ impl OpenAI<Files> {
         &mut self,
         file_id: S,
     ) -> Result<FileData, Box<dyn std::error::Error + Send + Sync>> {
-        let file: FileData = self
+        let res: reqwest::Response = self
             ._make_get_request(format!("{}/{}", Self::OPENAI_API_LIST_FILES_URL, file_id))
-            .await?
-            .json()
             .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let file: FileData = handled_res.json().await?;
         Ok(file)
     }
 
@@ -1322,16 +1353,18 @@ impl OpenAI<Files> {
         &mut self,
         file_id: S,
     ) -> Result<Vec<PromptCompletion>, Box<dyn std::error::Error + Send + Sync>> {
-        let resp = self
+        let res = self
             ._make_get_request(format!(
                 "{}/{}/content",
                 Self::OPENAI_API_LIST_FILES_URL,
                 file_id
             ))
-            .await?
-            .text()
             .await?;
-        let files: Vec<PromptCompletion> = resp
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let files: Vec<PromptCompletion> = handled_res
+            .text()
+            .await?
             .lines()
             .map(serde_json::from_str)
             .collect::<Result<Vec<PromptCompletion>, _>>()?;
@@ -1375,12 +1408,13 @@ impl OpenAI<Files> {
         let file_part_stream = self.create_file_upload_part(file).await?;
         let mut form = Form::new().part("file", file_part_stream);
         form = form.text("purpose", self.config.purpose.clone().unwrap());
-        let file: FileData = self
+        let res: reqwest::Response = self
             ._make_form_request(Self::OPENAI_API_LIST_FILES_URL, form)
-            .await?
-            .json()
             .await?;
-        Ok(file)
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let file_data: FileData = handled_res.json().await?;
+        Ok(file_data)
     }
 
     /// Delete a specific file.
@@ -1398,11 +1432,12 @@ impl OpenAI<Files> {
         &mut self,
         file_id: S,
     ) -> Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>> {
-        let del_resp: DeleteResponse = self
+        let res: reqwest::Response = self
             ._make_delete_request(format!("{}/{}", Self::OPENAI_API_LIST_FILES_URL, file_id))
-            .await?
-            .json()
             .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let del_resp: DeleteResponse = handled_res.json().await?;
         Ok(del_resp)
     }
 }
@@ -1521,7 +1556,26 @@ mod tests {
     async fn test_list_files() {
         let files = OpenAI::<Files>::new().list().await;
         assert!(files.is_ok());
-        assert_eq!(1, 0)
+    }
+
+    #[tokio::test]
+    async fn test_delete_non_existing_file() {
+        let files = OpenAI::<Files>::new().delete("invalid_file_id").await;
+        assert!(files.is_err());
+        assert_eq!(
+            files.unwrap_err().to_string(),
+            "No such File object: invalid_file_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_upload_non_existing_file() {
+        let files = OpenAI::<Files>::new().upload("invalid_file").await;
+        assert!(files.is_err());
+        assert_eq!(
+            files.unwrap_err().to_string(),
+            "No such file or directory (os error 2)"
+        );
     }
 
     #[tokio::test]
