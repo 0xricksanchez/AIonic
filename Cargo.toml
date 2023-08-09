@@ -1,7 +1,7 @@
 [package]
 name = "aionic"
 authors = ["434b <admin@0x434b.dev>"]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "AIonic: A unified, user-friendly Rust library for seamless integration with various public Language Model APIs, such as openAI"
 license = "MIT"

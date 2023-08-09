@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Represents a file in the OpenAI Files API.
+/// Represents a file in the `OpenAI`' Files API.
 ///
 /// A file may be uploaded for various purposes, and it's represented by a unique ID.
 ///
@@ -20,7 +20,7 @@ pub struct Files {
     pub file_id: Option<String>,
 }
 
-/// Represents the response from the OpenAI Files API.
+/// Represents the response from the `OpenAI`' Files API.
 ///
 /// It includes metadata and a list of data objects, each representing a file.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -32,7 +32,7 @@ pub struct Response {
     pub object: String,
 }
 
-/// Represents a file data in the OpenAI Files API.
+/// Represents a file data in the `OpenAI`' Files API.
 ///
 /// It includes the file's unique id, the type of the object,
 /// the number of bytes, creation timestamp, the file's name and its purpose.
@@ -57,7 +57,7 @@ pub struct Data {
     pub purpose: String,
 }
 
-/// Represents the response from the OpenAI Files API when a file is deleted successfully.
+/// Represents the response from the `OpenAI`' Files API when a file is deleted successfully.
 ///
 /// It includes metadata about the deleted file.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -72,14 +72,14 @@ pub struct DeleteResponse {
     pub deleted: bool,
 }
 
-/// Represents a prompt-completion pair in a JSONL response from the OpenAI API.
+/// Represents a prompt-completion pair in a JSONL response from the `OpenAI`' API.
 ///
-/// This is used for responses from the retrieve_content endpoint.
+/// This is used for responses from the `retrieve_content` endpoint.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PromptCompletion {
-    /// The prompt that was sent to the OpenAI API.
+    /// The prompt that was sent to the `OpenAI`' API.
     pub prompt: String,
 
-    /// The completion that was received from the OpenAI API.
+    /// The completion that was received from the `OpenAI`' API.
     pub completion: String,
 }
