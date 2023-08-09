@@ -51,11 +51,11 @@ impl TryFrom<&str> for FileType {
 
 impl FileType {
     pub fn get_file_type(file: &str) -> Result<Self, String> {
-        if let Some(mime_type) = file.split('.').last() {
-            Self::try_from(mime_type)
-        } else {
-            Err(format!("Invalid file type: {file}"))
-        }
+        file.split('.')
+            .last()
+            .map_or(Err(format!("Invalid file type: {file}")), |mime_type| {
+                Self::try_from(mime_type)
+            })
     }
 }
 

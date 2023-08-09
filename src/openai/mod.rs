@@ -4,6 +4,7 @@ pub mod embeddings;
 pub mod files;
 pub mod image;
 mod misc;
+pub mod moderations;
 
 pub use audio::{Audio, Response as AudioResponse, ResponseFormat as AudioResponseFormat};
 
@@ -16,6 +17,7 @@ use image::Size;
 pub use image::{Image, Response as ImageResponse, ResponseDataType};
 use misc::ModelsResponse;
 pub use misc::{Model, OpenAIError, Usage};
+pub use moderations::{Moderation, Response as ModerationResponse};
 
 use reqwest::multipart::{Form, Part};
 use reqwest::{Body, Client, IntoUrl};
@@ -103,6 +105,14 @@ impl OpenAIConfig for Files {
             file: None,
             purpose: None,
             file_id: None,
+        }
+    }
+}
+
+impl OpenAIConfig for Moderation {
+    fn default() -> Self {
+        Self {
+            input: String::new(),
         }
     }
 }
@@ -420,11 +430,11 @@ impl<C: OpenAIConfig + Serialize + std::fmt::Debug> OpenAI<C> {
         Ok(body)
     }
 
-    /// A helper function to handle potential errors from OpenAI API responses.
+    /// A helper function to handle potential errors from `OpenAI` API responses.
     ///
     /// # Arguments
     ///
-    /// * `res` - A `Response` object from the OpenAI API call.
+    /// * `res` - A `Response` object from the `OpenAI` API call.
     ///
     /// # Returns
     ///
@@ -1325,7 +1335,7 @@ impl OpenAI<Files> {
     /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
     /// A `FileData` object representing the file's details,
     /// or an error if the request fails.
-    pub async fn retrieve<S: Into<String> + std::fmt::Display>(
+    pub async fn retrieve<S: Into<String> + std::fmt::Display + Sync + Send>(
         &mut self,
         file_id: S,
     ) -> Result<FileData, Box<dyn std::error::Error + Send + Sync>> {
@@ -1349,7 +1359,7 @@ impl OpenAI<Files> {
     /// `Result<FileData, Box<dyn std::error::Error + Send + Sync>>`:
     /// A `FileData` object representing the file's content,
     /// or an error if the request fails.
-    pub async fn retrieve_content<S: Into<String> + std::fmt::Display>(
+    pub async fn retrieve_content<S: Into<String> + std::fmt::Display + Send + Sync>(
         &mut self,
         file_id: S,
     ) -> Result<Vec<PromptCompletion>, Box<dyn std::error::Error + Send + Sync>> {
@@ -1371,7 +1381,7 @@ impl OpenAI<Files> {
         Ok(files)
     }
 
-    /// Upload a file to the OpenAI API.
+    /// Upload a file to the `OpenAI` API.
     ///
     /// # Arguments
     ///
@@ -1387,11 +1397,13 @@ impl OpenAI<Files> {
         &mut self,
         file: P,
     ) -> Result<FileData, Box<dyn std::error::Error + Send + Sync>> {
-        self.config.purpose = Some("fine-tune".into());
         let path = file.as_ref();
         if fs::metadata(path)?.is_file() {
             let path_str = path.to_str().ok_or("Path is not valid UTF-8")?;
-            if !path_str.ends_with(".jsonl") {
+            if !std::path::Path::new(path_str)
+                .extension()
+                .map_or(false, |ext| ext.eq_ignore_ascii_case("jsonl"))
+            {
                 return Err(Box::new(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("File must be a .jsonl file: {}", path.display()),
@@ -1407,7 +1419,7 @@ impl OpenAI<Files> {
 
         let file_part_stream = self.create_file_upload_part(file).await?;
         let mut form = Form::new().part("file", file_part_stream);
-        form = form.text("purpose", self.config.purpose.clone().unwrap());
+        form = form.text("purpose", "fine-tune");
         let res: reqwest::Response = self
             ._make_form_request(Self::OPENAI_API_LIST_FILES_URL, form)
             .await?;
@@ -1428,7 +1440,7 @@ impl OpenAI<Files> {
     /// `Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>>`:
     /// A `DeleteResponse` object representing the response from the delete request,
     /// or an error if the request fails.
-    pub async fn delete<S: Into<String> + std::fmt::Display>(
+    pub async fn delete<S: Into<String> + std::fmt::Display + Send + Sync>(
         &mut self,
         file_id: S,
     ) -> Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>> {
@@ -1439,6 +1451,39 @@ impl OpenAI<Files> {
         let handled_res = self.handle_api_errors(res).await?;
         let del_resp: DeleteResponse = handled_res.json().await?;
         Ok(del_resp)
+    }
+}
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAI MODERATIONS IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+impl OpenAI<Moderation> {
+    const OPENAI_API_MODERATIONS_URL: &str = "https://api.openai.com/v1/moderations";
+
+    /// Create moderation for a classification if text violates `OpenAI`'s Content Policy
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The text input to classify
+    ///
+    /// # Returns
+    ///
+    /// `Result<, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `ModerationResponse` object representing the result of the moderation request,
+    /// or an error if the request fails.
+    pub async fn moderate<S: Into<String> + Send + Sync>(
+        &mut self,
+        input: S,
+    ) -> Result<ModerationResponse, Box<dyn std::error::Error + Send + Sync>> {
+        self.config.input = input.into();
+        let res: reqwest::Response = self
+            ._make_post_request(Self::OPENAI_API_MODERATIONS_URL)
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let mod_resp: ModerationResponse = handled_res.json().await?;
+        Ok(mod_resp)
     }
 }
 
@@ -1615,5 +1660,14 @@ mod tests {
         let files = client.list().await;
         assert!(files.is_ok());
         assert!(files.unwrap().data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_moderation() {
+        let moderation = OpenAI::<Moderation>::new()
+            .moderate("I want to kill them.")
+            .await;
+        assert!(moderation.is_ok());
+        assert!(moderation.unwrap().results[0].categories.violence);
     }
 }
