@@ -2,6 +2,7 @@ pub mod audio;
 pub mod chat;
 pub mod embeddings;
 pub mod files;
+pub mod fine_tunes;
 pub mod image;
 mod misc;
 pub mod moderations;
@@ -13,6 +14,10 @@ use chat::{Response, StreamedReponse};
 pub use embeddings::{Embedding, InputType, Response as EmbeddingResponse};
 pub use files::Files;
 use files::{Data as FileData, DeleteResponse, PromptCompletion, Response as FileResponse};
+pub use fine_tunes::{
+    EventResponse as FineTuneEventResponse, FineTune, ListResponse as FineTuneListResponse,
+    Response as FineTuneResponse,
+};
 use image::Size;
 pub use image::{Image, Response as ImageResponse, ResponseDataType};
 use misc::ModelsResponse;
@@ -113,6 +118,25 @@ impl OpenAIConfig for Moderation {
     fn default() -> Self {
         Self {
             input: String::new(),
+        }
+    }
+}
+
+impl OpenAIConfig for FineTune {
+    fn default() -> Self {
+        Self {
+            training_file: String::new(),
+            validation_file: None,
+            model: Some(Self::get_default_model().into()),
+            n_epochs: Some(Self::get_default_n_epochs()),
+            batch_size: None,
+            learning_rate_multiplier: None,
+            prompt_loss_weight: Some(Self::get_default_prompt_loss_weight()),
+            compute_classification_metrics: Some(Self::get_default_compute_classification_metrics()),
+            classification_n_classes: None,
+            classification_positive_class: None,
+            classification_betas: None,
+            suffix: None,
         }
     }
 }
@@ -1455,6 +1479,161 @@ impl OpenAI<Files> {
 }
 
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+// = OpenAI FINE-TUNE IMPLEMENTATION
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+
+impl OpenAI<FineTune> {
+    const OPENAI_API_FINE_TUNE_URL: &str = "https://api.openai.com/v1/fine-tunes";
+
+    /// Create a fine-tune from an uploaded `training_file`.
+    ///
+    /// # Arguments
+    ///
+    /// * `training_file` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FineTuneResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FineTuneResponse` object representing the result of the fine-tune request,
+    /// or an error if the request fails.
+    pub async fn create<S: Into<String> + Send + Sync>(
+        &mut self,
+        training_file: S,
+    ) -> Result<FineTuneResponse, Box<dyn std::error::Error + Send + Sync>> {
+        self.config.training_file = training_file.into();
+        let res: reqwest::Response = self
+            ._make_post_request(Self::OPENAI_API_FINE_TUNE_URL)
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let fine_tune_resp: FineTuneResponse = handled_res.json().await?;
+        Ok(fine_tune_resp)
+    }
+
+    /// List all fine-tunes.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FineTuneListResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FineTuneResponse` object representing the result of the list fine-tunes request,
+    /// or an error if the request fails.
+    pub async fn list(
+        &mut self,
+    ) -> Result<FineTuneListResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let res: reqwest::Response = self
+            ._make_get_request(Self::OPENAI_API_FINE_TUNE_URL)
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let res: FineTuneListResponse = handled_res.json().await?;
+        Ok(res)
+    }
+
+    /// Get a specific fine-tune by its id
+    ///
+    /// # Arguments
+    ///
+    /// * `fine_tune_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FineTuneResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FineTuneResponse` object representing the result of the get fine-tune request,
+    /// or an error if the request fails.
+    pub async fn retrieve<S: Into<String> + Send + Sync + std::fmt::Display>(
+        &mut self,
+        fine_tune_id: S,
+    ) -> Result<FineTuneResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let res: reqwest::Response = self
+            ._make_get_request(format!(
+                "{}/{}",
+                Self::OPENAI_API_FINE_TUNE_URL,
+                fine_tune_id
+            ))
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let res: FineTuneResponse = handled_res.json().await?;
+        Ok(res)
+    }
+
+    /// Immediately cancel a fine-tune job.
+    ///
+    /// # Arguments
+    ///
+    /// * `fine_tune_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FineTuneResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FineTuneResponse` object representing the result of the cancel fine-tune request,
+    /// or an error if the request fails.
+    pub async fn cancel<S: Into<String> + Send + Sync + std::fmt::Display>(
+        &mut self,
+        fine_tune_id: S,
+    ) -> Result<FineTuneResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/{}/cancel", Self::OPENAI_API_FINE_TUNE_URL, fine_tune_id);
+        let res = self
+            .client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let res: FineTuneResponse = handled_res.json().await?;
+        Ok(res)
+    }
+
+    /// Get fine-grained status updates for a fine-tune job.
+    ///
+    /// # Arguments
+    ///
+    /// * `fine_tune_id` - A string that holds the unique id of the file.
+    ///
+    /// # Returns
+    ///
+    /// `Result<FineTuneEventResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `FineTuneEventResponse` object representing the result of the list fine-tunes request,
+    /// or an error if the request fails.
+    pub async fn list_events<S: Into<String> + Send + Sync + std::fmt::Display>(
+        &mut self,
+        fine_tune_id: S,
+    ) -> Result<FineTuneEventResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/{}/events", Self::OPENAI_API_FINE_TUNE_URL, fine_tune_id);
+        let res = self._make_get_request(url).await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let res: FineTuneEventResponse = handled_res.json().await?;
+        Ok(res)
+    }
+
+    /// Delete a fine-tuned model. You must have the Owner role in your organization.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - The model to delete
+    ///
+    /// # Returns
+    ///
+    /// `Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>>`:
+    /// A `DeleteResponse` object representing the status of the delete request,
+    /// or an error if the request fails.
+    pub async fn delete_model<S: Into<String> + Send + Sync + std::fmt::Display>(
+        &mut self,
+        model: S,
+    ) -> Result<DeleteResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let url = format!("{}/{}", Self::OPENAI_API_MODELS_URL, model);
+        let res = self._make_delete_request(url).await?;
+
+        let handled_res = self.handle_api_errors(res).await?;
+        let res: DeleteResponse = handled_res.json().await?;
+        Ok(res)
+    }
+}
+
+// =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 // = OpenAI MODERATIONS IMPLEMENTATION
 // =-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
@@ -1669,5 +1848,11 @@ mod tests {
             .await;
         assert!(moderation.is_ok());
         assert!(moderation.unwrap().results[0].categories.violence);
+    }
+
+    #[tokio::test]
+    async fn test_list_fine_tunes() {
+        let tunes = OpenAI::<FineTune>::new().list().await;
+        assert!(tunes.is_ok());
     }
 }
