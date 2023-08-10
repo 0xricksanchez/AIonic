@@ -45,12 +45,13 @@ We covered the following aspects:
   * [x] Embeddings
   * [x] Audio
   * [x] Files
-  * [ ] Fine-tunes
-  * [ ] Moderations
-  * [ ] Edits
+  * [x] Fine-tunes
+  * [x] Moderations
 * Bard/PaLM2:
   * [ ] TODO
 * LLaMA:
+  * [ ] TODO
+* Claude2:
   * [ ] TODO
 
 ## Contributing
