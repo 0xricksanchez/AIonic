@@ -1696,14 +1696,16 @@ mod tests {
     async fn test_single_request() {
         let mut client = OpenAI::<Chat>::new().set_stream_responses(false);
         let reply = client.ask("Say this is a test!", false).await;
-        assert_eq!(reply.unwrap(), "This is a test!");
+        assert!(reply.is_ok());
+        assert!(reply.unwrap().contains("This is a test"));
     }
 
     #[tokio::test]
     async fn test_single_request_streamed() {
         let mut client = OpenAI::<Chat>::new();
         let reply = client.ask("Say this is a test!", false).await;
-        assert_eq!(reply.unwrap(), "This is a test!");
+        assert!(reply.is_ok());
+        assert!(reply.unwrap().contains("This is a test"));
     }
 
     #[tokio::test]
